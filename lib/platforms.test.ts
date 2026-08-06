@@ -32,16 +32,35 @@ describe("platform allowlist", () => {
   it("matches the channels platform check constraint", () => {
     expect(latestChannelsPlatformConstraint()).toEqual([...PLATFORMS].sort());
   });
+
+  it("keeps ALL_MIGRATIONS.sql a faithful in-order copy of every migration", () => {
+    const dir = migrationsDir();
+    const bundle = readFileSync(join(dir, "ALL_MIGRATIONS.sql"), "utf8");
+    let cursor = 0;
+    for (const file of migrationFiles()) {
+      const body = readFileSync(join(dir, file), "utf8").trim();
+      const at = bundle.indexOf(body, cursor);
+      expect(at, `${file} missing from ALL_MIGRATIONS.sql or out of order`).toBeGreaterThan(-1);
+      cursor = at + body.length;
+    }
+  });
 });
+
+function migrationsDir(): string {
+  return join(__dirname, "..", "supabase", "migrations");
+}
+
+function migrationFiles(): string[] {
+  return readdirSync(migrationsDir())
+    .filter((f) => /^\d+_.*\.sql$/.test(f))
+    .sort();
+}
 
 /** The platform list from the newest migration that redefines the constraint. */
 function latestChannelsPlatformConstraint(): string[] {
-  const dir = join(__dirname, "..", "supabase", "migrations");
-  const migrations = readdirSync(dir)
-    .filter((f) => /^\d+_.*\.sql$/.test(f))
-    .sort();
+  const dir = migrationsDir();
 
-  for (const file of [...migrations].reverse()) {
+  for (const file of [...migrationFiles()].reverse()) {
     const sql = readFileSync(join(dir, file), "utf8");
     const match = sql.match(
       /channels[\s\S]*?platform[\s\S]*?check\s*\(\s*platform\s+in\s*\(([^)]*)\)/i

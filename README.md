@@ -55,7 +55,9 @@ npm install
 Create a free project at [supabase.com](https://supabase.com). Then run the SQL migrations in the Supabase SQL editor:
 
 ```bash
-# Run each file in supabase/migrations/ in order (00001 through 00009)
+# Run every numbered file in supabase/migrations/ in order, 00001 upwards.
+# Skipping later ones leaves features broken: 00016, for example, is what
+# lets a WhatsApp channel be stored at all.
 ```
 
 3. **Configure environment**
