@@ -7,6 +7,7 @@ import { resolveWebhookSecret, verifyWebhookSignature } from "@/lib/zernio-webho
 import { upsertContactForSender } from "@/lib/inbox-sync";
 import { processComment } from "@/lib/comment-processor";
 import type { Database } from "@/lib/types/database";
+import { messagePreview } from "@/lib/message-preview";
 
 // ── Zernio API webhook payload ───────────────────────────────────────────────
 
@@ -228,7 +229,7 @@ async function processMessageEvent(
 
   // ── Upsert conversation ──────────────────────────────────────────────────
 
-  const messagePreview = (msg.text || "").slice(0, 100);
+  const preview = messagePreview(msg.text);
 
   const { data: conversation } = await supabase
     .from("conversations")
@@ -241,7 +242,7 @@ async function processMessageEvent(
         late_conversation_id: conv.id,
         status: "open",
         last_message_at: new Date().toISOString(),
-        last_message_preview: messagePreview,
+        last_message_preview: preview,
         unread_count: 1,
       },
       { onConflict: "channel_id,contact_id" }
@@ -258,7 +259,7 @@ async function processMessageEvent(
     await supabase
       .rpc("increment_unread", {
         conv_id: conversation.id,
-        preview: messagePreview,
+        preview,
       })
       .then(() => {});
   }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createZernioClient } from "@/lib/zernio-client";
+import { messagePreview } from "@/lib/message-preview";
 
 /**
  * GET /api/v1/messages?conversationId=...
@@ -157,7 +158,7 @@ export async function POST(request: NextRequest) {
       .from("conversations")
       .update({
         last_message_at: new Date().toISOString(),
-        last_message_preview: text.slice(0, 100),
+        last_message_preview: messagePreview(text),
       })
       .eq("id", conversationId);
 

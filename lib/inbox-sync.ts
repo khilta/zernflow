@@ -9,6 +9,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Zernio } from "./zernio-client";
+import { messagePreview } from "@/lib/message-preview";
 
 /** Cap per channel: 4 pages x 50 conversations. */
 const MAX_PAGES_PER_CHANNEL = 4;
@@ -244,7 +245,7 @@ async function importConversation({
         late_conversation_id: conv.id,
         status: conv.status === "archived" ? "closed" : "open",
         last_message_at: conv.updatedTime ?? null,
-        last_message_preview: (conv.lastMessage ?? "").slice(0, 100),
+        last_message_preview: messagePreview(conv.lastMessage),
         unread_count: conv.unreadCount ?? 0,
       },
       { onConflict: "channel_id,contact_id", ignoreDuplicates: true }
