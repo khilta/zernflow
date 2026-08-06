@@ -40,8 +40,12 @@ function getDmLink(platform: Platform, username: string | null): { url: string |
       return handle ? { url: `https://x.com/${handle}`, label: `x.com/${handle}` } : { url: null, label: "" };
     case "reddit":
       return handle ? { url: `https://reddit.com/message/compose/?to=${handle}`, label: `reddit.com/.../to=${handle}` } : { url: null, label: "" };
-    case "whatsapp":
-      return handle ? { url: `https://wa.me/${handle}`, label: `wa.me/${handle}` } : { url: null, label: "" };
+    case "whatsapp": {
+      // Zernio stores WhatsApp numbers display-formatted ("+34 902 80 82 90");
+      // wa.me rejects anything but digits.
+      const digits = handle.replace(/\D/g, "");
+      return digits ? { url: `https://wa.me/${digits}`, label: `wa.me/${digits}` } : { url: null, label: "" };
+    }
     default:
       return { url: null, label: "" };
   }
@@ -118,17 +122,25 @@ export function ChannelsView({
         return;
       }
 
-      setChannels(data.channels ?? []);
+      const syncedChannels: Channel[] = data.channels ?? [];
+      setChannels(syncedChannels);
       const {
         created,
         updated,
         deactivated,
         conversationsImported = 0,
         failed = [],
+        skipped = [],
       } = data.synced;
+      const nothingChanged =
+        created === 0 && updated === 0 && deactivated === 0 && conversationsImported === 0;
       if (failed.length > 0) {
         setSyncMessage(`Could not save some channels: ${failed.join("; ")}`);
-      } else if (created === 0 && updated === 0 && deactivated === 0 && conversationsImported === 0) {
+      } else if (nothingChanged && syncedChannels.length === 0 && skipped.length > 0) {
+        setSyncMessage(
+          `Nothing to connect: ZernFlow does not support ${skipped.join(", ")}`
+        );
+      } else if (nothingChanged) {
         setSyncMessage("All channels up to date");
       } else {
         const parts = [];
