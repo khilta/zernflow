@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createZernioClient } from "@/lib/zernio-client";
+import { PLATFORMS, isSupportedPlatform } from "@/lib/platforms";
 
 async function getWorkspace(supabase: Awaited<ReturnType<typeof createClient>>) {
   const {
@@ -41,10 +42,9 @@ export async function POST(request: NextRequest) {
 
   const { platform } = await request.json();
 
-  const supported = ["facebook", "instagram", "twitter", "telegram", "bluesky", "reddit"];
-  if (!platform || !supported.includes(platform)) {
+  if (!isSupportedPlatform(platform)) {
     return NextResponse.json(
-      { error: `Unsupported platform. Must be one of: ${supported.join(", ")}` },
+      { error: `Unsupported platform. Must be one of: ${PLATFORMS.join(", ")}` },
       { status: 400 }
     );
   }

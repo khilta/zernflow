@@ -136,10 +136,14 @@ export function SendMessagePanel({ data: rawData, onChange, availableVariables }
       <div className="rounded-lg border border-border bg-muted p-3">
         <p className="text-xs font-medium text-muted-foreground">Platform notes</p>
         <ul className="mt-1.5 space-y-1 text-[11px] text-muted-foreground">
-          <li>Facebook/Instagram: Max 3 buttons per message</li>
+          <li>Facebook/Instagram/WhatsApp: Max 3 buttons per message</li>
           <li>Telegram: Buttons appear as inline keyboards</li>
           <li>Quick replies disappear after user responds</li>
           <li>Carousels: Native on Facebook/Instagram, text fallback elsewhere</li>
+          <li>
+            WhatsApp: Meta only accepts free-form messages within 24h of the
+            contact&apos;s last message
+          </li>
         </ul>
       </div>
     </div>

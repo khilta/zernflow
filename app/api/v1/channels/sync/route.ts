@@ -6,6 +6,7 @@ import {
   getOrCreateWorkspaceWebhookSecret,
 } from "@/lib/zernio-webhook";
 import { backfillInboxConversations } from "@/lib/inbox-sync";
+import { isSupportedPlatform } from "@/lib/platforms";
 
 async function getWorkspace(supabase: Awaited<ReturnType<typeof createClient>>) {
   const {
@@ -64,9 +65,18 @@ export async function POST() {
     const lateAccountIds = new Set(lateAccounts.map((a: { _id?: string }) => a._id).filter(Boolean));
     let created = 0;
     let updated = 0;
+    const skipped: string[] = [];
+    const failed: string[] = [];
 
     for (const account of lateAccounts) {
       if (!account._id) continue;
+      // A Zernio key also carries accounts we can't drive (TikTok, YouTube,
+      // ads accounts...). Inserting those hit the channels platform check
+      // constraint and, since the error was discarded, vanished silently.
+      if (!isSupportedPlatform(account.platform)) {
+        if (account.platform) skipped.push(account.platform);
+        continue;
+      }
       const acc = account as typeof account & { profilePicture?: string };
       const profilePic = acc.profilePicture || null;
 
@@ -89,15 +99,22 @@ export async function POST() {
           updated++;
         }
       } else {
-        await supabase.from("channels").insert({
+        const { error: insertErr } = await supabase.from("channels").insert({
           workspace_id: workspace.id,
-          platform: account.platform as "facebook" | "instagram" | "twitter" | "telegram" | "bluesky" | "reddit",
+          platform: account.platform,
           late_account_id: account._id,
           username: account.username || null,
           display_name: account.displayName || account.username || null,
           profile_picture: profilePic,
           is_active: true,
         });
+        if (insertErr) {
+          // Reporting a channel we did not store is how #16 stayed hidden:
+          // the platform check constraint rejected the row and the UI said OK.
+          console.error("[channels/sync] channel insert failed:", insertErr);
+          failed.push(`${account.platform}: ${insertErr.message}`);
+          continue;
+        }
         created++;
       }
     }
@@ -158,7 +175,14 @@ export async function POST() {
 
     return NextResponse.json({
       channels: channels ?? [],
-      synced: { created, updated, deactivated, conversationsImported },
+      synced: {
+        created,
+        updated,
+        deactivated,
+        conversationsImported,
+        skipped: [...new Set(skipped)],
+        failed,
+      },
     });
   } catch (error) {
     console.error("Failed to sync channels:", error);

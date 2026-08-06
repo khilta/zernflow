@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { scheduleBroadcastDelivery } from "@/lib/scheduler";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database, Json } from "@/lib/types/database";
+import type { Database, Json, Platform } from "@/lib/types/database";
 
 interface SegmentRule {
   field: string;
@@ -300,7 +300,7 @@ async function evaluateRule(
         .from("channels")
         .select("id")
         .eq("workspace_id", workspaceId)
-        .eq("platform", rule.value as "facebook" | "instagram" | "twitter" | "telegram" | "bluesky" | "reddit");
+        .eq("platform", rule.value as Platform);
 
       if (!channels?.length) {
         return rule.operator === "not_equals" ? new Set(contactIds) : new Set();

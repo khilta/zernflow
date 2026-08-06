@@ -1,6 +1,6 @@
 # ZernFlow
 
-The open-source ManyChat alternative. Visual flow builder for Instagram, Facebook, Telegram, Twitter/X, Bluesky & Reddit.
+The open-source ManyChat alternative. Visual flow builder for Instagram, Facebook, WhatsApp, Telegram, Twitter/X, Bluesky & Reddit.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Website](https://img.shields.io/badge/Website-zernflow.com-indigo)](https://zernflow.com)
@@ -9,7 +9,7 @@ The open-source ManyChat alternative. Visual flow builder for Instagram, Faceboo
 
 ## What is ZernFlow?
 
-ZernFlow is an open-source alternative to ManyChat. Build visual chatbot flows, manage contacts, send broadcasts, run drip campaigns, and handle live chat conversations across 6 social media platforms.
+ZernFlow is an open-source alternative to ManyChat. Build visual chatbot flows, manage contacts, send broadcasts, run drip campaigns, and handle live chat conversations across 7 social media platforms.
 
 **Powered by [Zernio](https://zernio.com)** for OAuth, token refresh, rate limiting, and cross-platform messaging.
 
@@ -22,7 +22,8 @@ ZernFlow is an open-source alternative to ManyChat. Build visual chatbot flows, 
 - **Broadcasting** - Send targeted messages to contact segments
 - **Sequences** - Drip campaigns with timed message series and automatic enrollment
 - **Team Management** - Invite members, assign roles, manage permissions
-- **Multi-Platform** - Instagram, Facebook, Telegram, Twitter/X, Bluesky, Reddit
+- **Multi-Platform** - Instagram, Facebook, WhatsApp, Telegram, Twitter/X, Bluesky, Reddit
+  - WhatsApp needs a WhatsApp Business Account; Meta's signup flow creates one during connect. Meta only accepts free-form messages within 24 hours of the contact's last message, so auto-replies work while broadcasts and delayed sequence steps can be rejected outside that window (approved message templates are not supported yet).
 - **Connect Channels** - OAuth connection flow directly from ZernFlow (powered by Zernio)
 - **Rich Messaging** - Buttons, quick replies, and carousel cards
 - **Comment-to-DM** - Automatically DM users who comment specific keywords
@@ -98,7 +99,7 @@ Recv.  Engine     Chat           Processor
    +----+----+----+----+----+
         |         |         |
     Supabase   Zernio API AI SDK
-  (PG + Auth   (6 platforms) (OpenAI /
+  (PG + Auth   (7 platforms) (OpenAI /
   + Realtime)              Anthropic /
                            Google)
 ```

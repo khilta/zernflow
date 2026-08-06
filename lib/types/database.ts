@@ -1,3 +1,5 @@
+import type { Platform } from "@/lib/platforms";
+
 export type Json =
   | string
   | number
@@ -6,14 +8,7 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[];
 
-export type Platform =
-  | "facebook"
-  | "instagram"
-  | "twitter"
-  | "telegram"
-  | "bluesky"
-  | "reddit"
-  | "whatsapp";
+export type { Platform };
 
 export type FlowStatus = "draft" | "published" | "archived";
 export type ConversationStatus = "open" | "closed" | "snoozed";

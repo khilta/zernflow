@@ -16,36 +16,16 @@ import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { PlatformIcon } from "@/components/platform-icon";
-import type { Database, Platform } from "@/lib/types/database";
+import type { Database } from "@/lib/types/database";
+import {
+  PLATFORMS,
+  PLATFORM_LABELS,
+  platformLabel,
+  type Platform,
+} from "@/lib/platforms";
 
 type Channel = Database["public"]["Tables"]["channels"]["Row"];
 
-const platformLabels: Record<Platform, string> = {
-  facebook: "Facebook",
-  instagram: "Instagram",
-  twitter: "X / Twitter",
-  telegram: "Telegram",
-  bluesky: "Bluesky",
-  reddit: "Reddit",
-  whatsapp: "WhatsApp",
-};
-
-const connectablePlatforms: { id: Platform; label: string }[] = [
-  { id: "instagram", label: "Instagram" },
-  { id: "facebook", label: "Facebook" },
-  { id: "twitter", label: "X / Twitter" },
-  { id: "telegram", label: "Telegram" },
-  { id: "bluesky", label: "Bluesky" },
-  { id: "reddit", label: "Reddit" },
-  { id: "whatsapp", label: "WhatsApp" },
-];
-
-function getPlatformLabel(platform: string): string {
-  return (
-    platformLabels[platform as Platform] ||
-    platform.charAt(0).toUpperCase() + platform.slice(1)
-  );
-}
 
 function getDmLink(platform: Platform, username: string | null): { url: string | null; label: string } {
   const handle = username || "";
@@ -139,8 +119,16 @@ export function ChannelsView({
       }
 
       setChannels(data.channels ?? []);
-      const { created, updated, deactivated, conversationsImported = 0 } = data.synced;
-      if (created === 0 && updated === 0 && deactivated === 0 && conversationsImported === 0) {
+      const {
+        created,
+        updated,
+        deactivated,
+        conversationsImported = 0,
+        failed = [],
+      } = data.synced;
+      if (failed.length > 0) {
+        setSyncMessage(`Could not save some channels: ${failed.join("; ")}`);
+      } else if (created === 0 && updated === 0 && deactivated === 0 && conversationsImported === 0) {
         setSyncMessage("All channels up to date");
       } else {
         const parts = [];
@@ -150,7 +138,7 @@ export function ChannelsView({
         if (conversationsImported > 0) parts.push(`${conversationsImported} conversations imported`);
         setSyncMessage(parts.join(", "));
       }
-      setTimeout(() => setSyncMessage(null), 4000);
+      setTimeout(() => setSyncMessage(null), failed.length > 0 ? 10000 : 4000);
     } catch {
       setSyncMessage("Failed to sync. Check your connection.");
     } finally {
@@ -240,19 +228,19 @@ export function ChannelsView({
               </button>
               {showPlatformPicker && (
                 <div className="absolute right-0 top-full z-50 mt-2 w-56 rounded-xl border border-border bg-card p-2 shadow-lg">
-                  {connectablePlatforms.map((p) => (
+                  {PLATFORMS.map((p) => (
                     <button
-                      key={p.id}
-                      onClick={() => handleConnect(p.id)}
-                      disabled={connecting === p.id}
+                      key={p}
+                      onClick={() => handleConnect(p)}
+                      disabled={connecting === p}
                       className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-foreground hover:bg-muted disabled:opacity-50 transition-colors"
                     >
-                      {connecting === p.id ? (
+                      {connecting === p ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
                       ) : (
-                        <PlatformIcon platform={p.id} className="h-4 w-4" size={16} />
+                        <PlatformIcon platform={p} className="h-4 w-4" size={16} />
                       )}
-                      {p.label}
+                      {PLATFORM_LABELS[p]}
                     </button>
                   ))}
                 </div>
@@ -285,7 +273,7 @@ export function ChannelsView({
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {channels.map((channel) => {
-              const label = getPlatformLabel(channel.platform);
+              const label = platformLabel(channel.platform);
               return (
                 <div
                   key={channel.id}
@@ -453,7 +441,7 @@ export function ChannelsView({
         message={`This disconnects ${
           channelToDelete?.display_name ??
           channelToDelete?.username ??
-          (channelToDelete ? getPlatformLabel(channelToDelete.platform) : "this channel")
+          (channelToDelete ? platformLabel(channelToDelete.platform) : "this channel")
         } from Zernio and permanently deletes its conversations, contact links, and stats in Zernflow. This cannot be undone.`}
         confirmLabel="Delete"
         destructive

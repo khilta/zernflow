@@ -18,7 +18,7 @@ import {
   createEmptyFilter,
   type SegmentFilter,
 } from "@/components/segment-builder";
-import type { Database, Platform } from "@/lib/types/database";
+import type { Database } from "@/lib/types/database";
 
 type Tag = Database["public"]["Tables"]["tags"]["Row"];
 type ContactWithTags = Database["public"]["Tables"]["contacts"]["Row"] & {
@@ -26,16 +26,6 @@ type ContactWithTags = Database["public"]["Tables"]["contacts"]["Row"] & {
     tag_id: string;
     tags: Tag | null;
   }[];
-};
-
-const platformLabels: Record<Platform, string> = {
-  facebook: "Facebook",
-  instagram: "Instagram",
-  twitter: "X / Twitter",
-  telegram: "Telegram",
-  bluesky: "Bluesky",
-  reddit: "Reddit",
-  whatsapp: "WhatsApp",
 };
 
 function formatDate(dateStr: string | null): string {

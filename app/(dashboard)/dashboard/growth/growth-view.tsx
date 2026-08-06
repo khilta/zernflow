@@ -16,7 +16,8 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
-import type { Database, Json, Platform } from "@/lib/types/database";
+import type { Database, Json } from "@/lib/types/database";
+import { PLATFORM_LABELS } from "@/lib/platforms";
 
 type Channel = Database["public"]["Tables"]["channels"]["Row"];
 type CommentLog = Database["public"]["Tables"]["comment_logs"]["Row"];
@@ -41,16 +42,6 @@ interface TriggerConfig {
   postIds?: string[];
   replyText?: string;
 }
-
-const platformLabels: Record<Platform, string> = {
-  facebook: "Facebook",
-  instagram: "Instagram",
-  twitter: "X / Twitter",
-  telegram: "Telegram",
-  bluesky: "Bluesky",
-  reddit: "Reddit",
-  whatsapp: "WhatsApp",
-};
 
 export function GrowthView({
   workspaceId,
@@ -376,7 +367,7 @@ export function GrowthView({
                   {channels.map((ch) => (
                     <option key={ch.id} value={ch.id}>
                       {ch.display_name || ch.username || ch.late_account_id} (
-                      {platformLabels[ch.platform]})
+                      {PLATFORM_LABELS[ch.platform]})
                     </option>
                   ))}
                 </select>
@@ -606,7 +597,7 @@ export function GrowthView({
                             <span className="text-xs text-muted-foreground">
                               {channel.display_name ||
                                 channel.username ||
-                                platformLabels[channel.platform]}
+                                PLATFORM_LABELS[channel.platform]}
                             </span>
                           )}
 

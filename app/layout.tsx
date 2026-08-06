@@ -10,12 +10,12 @@ export const metadata: Metadata = {
     template: "%s | ZernFlow",
   },
   description:
-    "Automate DMs, comments, and flows across Instagram, Facebook, Telegram, X, Bluesky, and Reddit. Free, self-hostable, and open source.",
+    "Automate DMs, comments, and flows across Instagram, Facebook, WhatsApp, Telegram, X, Bluesky, and Reddit. Free, self-hostable, and open source.",
   metadataBase: new URL("https://zernflow.com"),
   openGraph: {
     title: "ZernFlow - The Open Source ManyChat Alternative",
     description:
-      "Automate DMs, comments, and flows across Instagram, Facebook, Telegram, X, Bluesky, and Reddit. Free, self-hostable, and open source.",
+      "Automate DMs, comments, and flows across Instagram, Facebook, WhatsApp, Telegram, X, Bluesky, and Reddit. Free, self-hostable, and open source.",
     url: "https://zernflow.com",
     siteName: "ZernFlow",
     type: "website",
@@ -24,7 +24,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: "ZernFlow - The Open Source ManyChat Alternative",
     description:
-      "Automate DMs, comments, and flows across 6 platforms. Free, self-hostable, open source.",
+      "Automate DMs, comments, and flows across 7 platforms. Free, self-hostable, open source.",
   },
   icons: {
     icon: [

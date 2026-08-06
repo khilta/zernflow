@@ -4,7 +4,8 @@ import { useState, useEffect } from "react";
 import { Plus, X, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
-import type { Database, Platform } from "@/lib/types/database";
+import type { Database } from "@/lib/types/database";
+import { PLATFORMS, PLATFORM_LABELS } from "@/lib/platforms";
 
 type Tag = Database["public"]["Tables"]["tags"]["Row"];
 type CustomFieldDef =
@@ -100,16 +101,6 @@ const fieldConfig: Record<
     valueType: "date",
   },
 };
-
-const platforms: { value: Platform; label: string }[] = [
-  { value: "facebook", label: "Facebook" },
-  { value: "instagram", label: "Instagram" },
-  { value: "twitter", label: "X / Twitter" },
-  { value: "telegram", label: "Telegram" },
-  { value: "bluesky", label: "Bluesky" },
-  { value: "reddit", label: "Reddit" },
-  { value: "whatsapp", label: "WhatsApp" },
-];
 
 function generateId() {
   return Math.random().toString(36).slice(2, 10);
@@ -262,9 +253,9 @@ function FilterRuleRow({
             className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           >
             <option value="">Select platform...</option>
-            {platforms.map((p) => (
-              <option key={p.value} value={p.value}>
-                {p.label}
+            {PLATFORMS.map((p) => (
+              <option key={p} value={p}>
+                {PLATFORM_LABELS[p]}
               </option>
             ))}
           </select>

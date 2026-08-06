@@ -6,6 +6,7 @@ import {
   getOrCreateWorkspaceWebhookSecret,
 } from "@/lib/zernio-webhook";
 import { backfillInboxConversations } from "@/lib/inbox-sync";
+import { isSupportedPlatform } from "@/lib/platforms";
 
 /**
  * POST /api/v1/channels/test-key
@@ -83,16 +84,20 @@ export async function POST(request: NextRequest) {
     for (const account of accounts) {
       if (!account._id) continue;
       if (existingByLateId.has(account._id)) continue;
+      if (!isSupportedPlatform(account.platform)) continue;
 
-      await supabase.from("channels").insert({
+      const { error: insertErr } = await supabase.from("channels").insert({
         workspace_id: workspaceId,
-        platform: account.platform as "facebook" | "instagram" | "twitter" | "telegram" | "bluesky" | "reddit",
+        platform: account.platform,
         late_account_id: account._id,
         username: account.username || null,
         display_name: account.displayName || account.username || null,
         profile_picture: account.profilePicture || null,
         is_active: true,
       });
+      if (insertErr) {
+        console.error("[test-key] channel insert failed:", insertErr);
+      }
     }
 
     // Backfill conversations that predate webhook registration so a
