@@ -15,7 +15,7 @@
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.95.3",
     "@xyflow/react": "^12.10.0",
-    "@zernio/node": "^0.2.518",
+    "@zernio/node": "^0.2.519",
     "ai": "^6.0.85",
     "clsx": "^2.1.1",
     "lucide-react": "^0.563.0",
