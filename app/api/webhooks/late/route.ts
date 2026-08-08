@@ -138,7 +138,7 @@ async function handleWebhook(request: NextRequest) {
   const { message: msg, account } = payload;
 
   // Ignore outbound messages (sent by the bot itself) to prevent loops
-  if (msg.direction === "outbound") {
+  if (msg.direction === "outgoing" || msg.direction === "outbound") {
     return NextResponse.json({ ok: true, skipped: true });
   }
 
