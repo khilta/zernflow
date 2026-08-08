@@ -264,7 +264,19 @@ async function processMessageEvent(
       .then(() => {});
   }
 
-  // Messages are stored by Zernio (source of truth) — no local insert needed.
+  // Store incoming messages locally so the inbox always has full history,
+  // even when Zernio's API returns gaps. Zernio remains primary for outbound.
+  await supabase
+    .from("messages")
+    .insert({
+      conversation_id: conversation.id,
+      direction: "inbound",
+      text: msg.text || null,
+      platform_message_id: msg.id || null,
+      status: "delivered",
+      attachments: msg.attachments?.length ? msg.attachments : null,
+    })
+    .then(() => {});
 
   // ── Flow engine ───────────────────────────────────────────────────────────
 
