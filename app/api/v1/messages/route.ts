@@ -54,7 +54,17 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Channel not found" }, { status: 404 });
   }
 
-  // Fetch messages from Zernio API
+  // Fetch messages from both Zernio API AND local table, then merge.
+  // Zernio may not return outbound messages sent via flow engine, and the local
+  // table may not have incoming messages. Merging both gives the full thread.
+
+  // Always fetch local messages (flow-sent outbound DMs, comment-triggered messages)
+  const { data: localMessages } = await supabase
+    .from("messages")
+    .select("*")
+    .eq("conversation_id", conversationId)
+    .order("created_at", { ascending: true });
+
   try {
     const zernio = createZernioClient(workspace.late_api_key_encrypted);
     const res = await zernio.messages.getInboxConversationMessages({
@@ -69,7 +79,7 @@ export async function GET(request: NextRequest) {
       [];
 
     // Map Zernio messages to the shape the inbox UI expects
-    const messages = zernioMessages.map((m: any) => ({
+    const mappedZernioMessages = zernioMessages.map((m: any) => ({
       id: m.id,
       conversation_id: conversationId,
       direction: m.direction === "outbound" ? "outbound" : "inbound",
@@ -86,13 +96,26 @@ export async function GET(request: NextRequest) {
       created_at: m.sentAt ?? m.createdAt ?? new Date().toISOString(),
     }));
 
-    return NextResponse.json(messages);
+    // Merge: Zernio messages + local messages, deduplicate by platform_message_id
+    const seenIds = new Set(
+      mappedZernioMessages
+        .map((m: any) => m.platform_message_id)
+        .filter(Boolean)
+    );
+    const localOnly = (localMessages ?? []).filter(
+      (m) => !m.platform_message_id || !seenIds.has(m.platform_message_id)
+    );
+
+    const merged = [...mappedZernioMessages, ...localOnly].sort(
+      (a: any, b: any) =>
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    );
+
+    return NextResponse.json(merged);
   } catch (error) {
     console.error("Failed to fetch messages from Zernio API:", error);
-    return NextResponse.json(
-      { error: "Failed to fetch messages" },
-      { status: 500 }
-    );
+    // If Zernio API fails, fall back to local messages only
+    return NextResponse.json(localMessages ?? []);
   }
 }
 
