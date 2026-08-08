@@ -113,6 +113,31 @@ export function TriggerPanel({ data: rawData, onChange }: TriggerPanelProps) {
         </div>
       </div>
 
+      {/* Cross-channel toggle: also match comment keywords in DMs */}
+      {triggerType === "comment_keyword" && (
+        <div className="rounded-lg border border-border bg-card p-3">
+          <label className="flex cursor-pointer items-start gap-3">
+            <input
+              type="checkbox"
+              checked={!!data.alsoMatchInDMs}
+              onChange={(e) =>
+                onChange({ ...data, alsoMatchInDMs: e.target.checked })
+              }
+              className="mt-0.5 h-4 w-4 rounded border-input text-emerald-500 focus:ring-emerald-500"
+            />
+            <div>
+              <p className="text-sm font-medium text-foreground">
+                Also match in DMs
+              </p>
+              <p className="text-xs text-muted--foreground">
+                When enabled, the same keywords will also trigger this flow when a
+                user sends them as a direct message — not just as a comment.
+              </p>
+            </div>
+          </label>
+        </div>
+      )}
+
       {/* Keywords Section */}
       {showKeywords && (
         <div>
