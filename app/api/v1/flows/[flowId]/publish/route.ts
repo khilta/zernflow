@@ -116,16 +116,20 @@ export async function POST(
     })
     .filter((t): t is NonNullable<typeof t> => t !== null);
 
-  // Reconcile: clear the builder-managed trigger rows for this flow, then insert the
-  // fresh set derived from the current node graph (delete-and-reinsert keeps the table
-  // in sync with what was published and avoids duplicates on republish). Only
-  // null-channel rows are builder-managed; channel-scoped rows belong to the Growth tab.
-  await supabase
-    .from("triggers")
-    .delete()
-    .eq("flow_id", flowId)
-    .is("channel_id", null)
-    .in("type", [...BUILDER_TRIGGER_TYPES]);
+  // Reconcile: clear only the builder-managed trigger rows whose types appear in
+  // the current node graph, then insert the fresh set. This preserves trigger rows
+  // of other types that may have been added programmatically (e.g. a `keyword` DM
+  // trigger paired with a `comment_keyword` trigger for the same flow).
+  // Only null-channel rows are builder-managed; channel-scoped rows belong to Growth tab.
+  const managedTypes = [...new Set(desiredTriggers.map((t) => t.type))];
+  if (managedTypes.length > 0) {
+    await supabase
+      .from("triggers")
+      .delete()
+      .eq("flow_id", flowId)
+      .is("channel_id", null)
+      .in("type", managedTypes);
+  }
 
   if (desiredTriggers.length > 0) {
     const { error: insertError } = await supabase.from("triggers").insert(desiredTriggers);
