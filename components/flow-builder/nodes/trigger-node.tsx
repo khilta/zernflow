@@ -8,6 +8,7 @@ export interface TriggerNodeProps {
   label?: string;
   triggerType?: string;
   keywords?: Array<{ value: string; matchType: string }>;
+  alsoMatchInDMs?: boolean;
 }
 
 const triggerLabels: Record<string, string> = {
@@ -50,6 +51,11 @@ export function TriggerNode({ data, selected }: NodeProps) {
         {!nodeData.keywords?.length && triggerType !== "keyword" && (
           <p className="mt-1 text-xs text-muted-foreground">
             {triggerLabels[triggerType] || triggerType}
+          </p>
+        )}
+        {nodeData.alsoMatchInDMs && triggerType === "comment_keyword" && (
+          <p className="mt-1.5 inline-block rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:bg-blue-950 dark:text-blue-400">
+            💬 Also in DMs
           </p>
         )}
       </div>
