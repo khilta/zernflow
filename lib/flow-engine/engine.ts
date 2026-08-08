@@ -406,16 +406,6 @@ async function sendFirstMessageAsPrivateReply(
       status: "sent",
     });
 
-    // Keep conversation preview in sync so the inbox sidebar reflects the
-    // latest message (same behaviour as the manual-reply route).
-    await supabase
-      .from("conversations")
-      .update({
-        last_message_preview: Array.from(text).slice(0, 100).join(""),
-        last_message_at: new Date().toISOString(),
-      })
-      .eq("id", context.conversationId);
-
     await supabase.from("analytics_events").insert({
       workspace_id: context.workspaceId,
       flow_id: context.flowId,
@@ -554,16 +544,6 @@ async function executeSendMessage(
         platform_message_id: response.data?.data?.messageId || null,
         status: "sent",
       });
-
-      // Keep conversation preview in sync so the inbox sidebar reflects the
-      // latest message (same behaviour as the manual-reply route).
-      await supabase
-        .from("conversations")
-        .update({
-          last_message_preview: Array.from(text).slice(0, 100).join(""),
-          last_message_at: new Date().toISOString(),
-        })
-        .eq("id", context.conversationId);
 
       await supabase.from("analytics_events").insert({
         workspace_id: context.workspaceId,

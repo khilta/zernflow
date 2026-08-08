@@ -213,6 +213,19 @@ export async function processComment({
       .select("id")
       .single();
 
+    // Store the comment as an inbound message so the inbox thread shows how
+    // the conversation started — the customer's comment on the left, our DM
+    // on the right. Without this, the thread only shows our outbound DM with
+    // no context.
+    if (conversation) {
+      await supabase.from("messages").insert({
+        conversation_id: conversation.id,
+        direction: "inbound",
+        text: comment.text,
+        status: "delivered",
+      });
+    }
+
     let dmSent = false;
     if (conversation) {
       try {
