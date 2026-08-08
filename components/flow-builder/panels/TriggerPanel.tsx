@@ -129,7 +129,7 @@ export function TriggerPanel({ data: rawData, onChange }: TriggerPanelProps) {
               <p className="text-sm font-medium text-foreground">
                 Also match in DMs
               </p>
-              <p className="text-xs text-muted--foreground">
+              <p className="text-xs text-muted-foreground">
                 When enabled, the same keywords will also trigger this flow when a
                 user sends them as a direct message — not just as a comment.
               </p>
