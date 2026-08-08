@@ -28,7 +28,15 @@ export async function GET(request: NextRequest) {
     .single();
 
   if (!conversation?.late_conversation_id) {
-    return NextResponse.json({ error: "Conversation not found or missing Zernio ID" }, { status: 404 });
+    // Comment-triggered conversations have no Zernio DM thread, but the flow
+    // engine stores sent messages (private replies, DMs) in the local messages
+    // table. Fall back to that instead of returning a 404.
+    const { data: localMessages } = await supabase
+      .from("messages")
+      .select("*")
+      .eq("conversation_id", conversationId)
+      .order("created_at", { ascending: true });
+    return NextResponse.json(localMessages ?? []);
   }
 
   const { data: workspace } = await supabase
