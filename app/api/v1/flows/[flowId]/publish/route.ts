@@ -116,12 +116,38 @@ export async function POST(
     })
     .filter((t): t is NonNullable<typeof t> => t !== null);
 
+  // Dual-trigger: when a comment_keyword trigger has `alsoMatchInDMs` enabled,
+  // create an additional `keyword` type trigger for the same flow so the same
+  // keywords also match in direct messages (not just comments).
+  const extraTriggers: typeof desiredTriggers = [];
+  for (const node of flowNodes.filter((n) => n?.type === "trigger")) {
+    const data = (node.data ?? {}) as Record<string, any>;
+    const type = (data.triggerType ?? "keyword") as string;
+    if (type === "comment_keyword" && data.alsoMatchInDMs) {
+      const config: Record<string, any> = {};
+      const keywords = data.keywords ?? [];
+      if (keywords.length > 0) {
+        config.keywords = keywords;
+        // No replyText — DM triggers don't post public comment replies
+      }
+      extraTriggers.push({
+        flow_id: flowId,
+        channel_id: null,
+        type: "keyword" as TriggerType,
+        config,
+        is_active: true,
+        priority: 0,
+      });
+    }
+  }
+
   // Reconcile: clear only the builder-managed trigger rows whose types appear in
-  // the current node graph, then insert the fresh set. This preserves trigger rows
-  // of other types that may have been added programmatically (e.g. a `keyword` DM
-  // trigger paired with a `comment_keyword` trigger for the same flow).
+  // the current node graph (including the dual-trigger 'keyword' type if enabled),
+  // then insert the fresh set. This preserves trigger rows of other types that may
+  // have been added programmatically (e.g. via Growth tab or external tools).
   // Only null-channel rows are builder-managed; channel-scoped rows belong to Growth tab.
-  const managedTypes = [...new Set(desiredTriggers.map((t) => t.type))];
+  const allTriggers = [...desiredTriggers, ...extraTriggers];
+  const managedTypes = [...new Set(allTriggers.map((t) => t.type))];
   if (managedTypes.length > 0) {
     await supabase
       .from("triggers")
@@ -131,8 +157,8 @@ export async function POST(
       .in("type", managedTypes);
   }
 
-  if (desiredTriggers.length > 0) {
-    const { error: insertError } = await supabase.from("triggers").insert(desiredTriggers);
+  if (allTriggers.length > 0) {
+    const { error: insertError } = await supabase.from("triggers").insert(allTriggers);
     if (insertError) {
       console.error("[publish] Failed to sync triggers from flow nodes:", insertError);
     }
