@@ -73,9 +73,13 @@ export async function GET(request: NextRequest) {
     });
 
     // The Zernio endpoint returns { success, messages: [...] } — NOT { data }.
-    const zernioMessages =
-      (res.data as { messages?: unknown[] })?.messages ??
-      (res.data as { data?: unknown[] })?.data ??
+    // The SDK may wrap it differently, so try multiple shapes.
+    const raw = res.data as any;
+    const zernioMessages: unknown[] =
+      raw?.messages ??
+      raw?.data ??
+      raw?.data?.messages ??
+      (Array.isArray(raw) ? raw : []) ??
       [];
 
     // Map Zernio messages to the shape the inbox UI expects
