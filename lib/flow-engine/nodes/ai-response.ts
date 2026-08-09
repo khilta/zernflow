@@ -97,68 +97,160 @@ export async function executeAiResponse(
     }
   }
 
+  const model = data.model || "openai/gpt-4o-mini";
+  const aiGatewayKey = workspace.ai_api_key || process.env.AI_GATEWAY_API_KEY;
+  const gw = createGateway({ apiKey: aiGatewayKey || undefined });
+
+  // Retry with exponential backoff + jitter to absorb transient provider
+  // rate-limits (429) and network blips without ghosting the contact.
+  const maxRetries = data.maxRetries ?? 2;
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      // ── Typing indicator ──────────────────────────────────────────────
+      // Show "typing..." to the user while the AI generates its response.
+      // Meta's own docs: "send typing_on when your bot receives a message."
+      // Instagram shows it until the message is sent (or 20s auto-off).
+      // Best-effort: never block on indicator failure.
+      if (data.sendDirectly !== false) {
+        zernio.messages
+          .sendTypingIndicator({
+            path: { conversationId: lateConversationId },
+            body: { accountId: lateAccountId },
+          })
+          .catch((_e: unknown) => {
+            /* best-effort — don't block on indicator failure */
+          });
+      }
+
+      const result = await generateText({
+        model: gw(model),
+        system: data.systemPrompt || "You are a helpful customer support agent.",
+        messages: aiMessages,
+        temperature: data.temperature ?? 0.7,
+        maxOutputTokens: data.maxTokens ?? 500,
+      });
+
+      const text = result.text;
+
+      // ── Natural typing delay ──────────────────────────────────────────
+      // An instant response feels robotic. Simulate reading + typing:
+      //   base reading time: 2-4s (random)
+      //   per-character typing: 30-50ms each (random)
+      //   capped at 12s so long messages don't over-delay
+      // Validated: ManyChat enforces min 10s; Gnewuch et al. (2022) found
+      // moderate delay enhances perceived social presence and humanness.
+      if (data.sendDirectly !== false) {
+        const baseDelay = 2000 + Math.random() * 2000; // 2-4s
+        const charDelay = text.length * (30 + Math.random() * 20); // 30-50ms/char
+        const totalDelay = Math.min(baseDelay + charDelay, 12000); // cap 12s
+        console.log(
+          `[ai-response] Natural delay: ${Math.round(totalDelay)}ms ` +
+          `(base=${Math.round(baseDelay)}ms, chars=${text.length})`
+        );
+        await new Promise((resolve) => setTimeout(resolve, totalDelay));
+      }
+
+      // Expose the generated text to downstream nodes as {{ai_response}}
+      context.variables = { ...(context.variables ?? {}), ai_response: text };
+
+      if (data.sendDirectly !== false) {
+        // Send via Zernio REST API (same pattern as executeSendMessage)
+        const response = await zernio.messages.sendInboxMessage({
+          path: { conversationId: lateConversationId },
+          body: { accountId: lateAccountId, message: text },
+        });
+
+        // Store outbound message
+        await supabase.from("messages").insert({
+          conversation_id: context.conversationId,
+          direction: "outbound",
+          text,
+          attachments: null,
+          sent_by_flow_id: context.flowId,
+          sent_by_node_id: null,
+          platform_message_id: response.data?.data?.messageId || null,
+          status: "sent",
+        });
+
+        await supabase.from("analytics_events").insert({
+          workspace_id: context.workspaceId,
+          flow_id: context.flowId,
+          contact_id: context.contactId,
+          event_type: "message_sent",
+        });
+      }
+
+      return; // success
+    } catch (error) {
+      lastError = error;
+
+      // Non-retryable errors: abort immediately, no point retrying
+      const msg = error instanceof Error ? error.message : "";
+      const isRetryable =
+        msg.includes("429") ||
+        msg.includes("rate") ||
+        msg.includes("Rate") ||
+        msg.includes("overloaded") ||
+        msg.includes("timeout") ||
+        msg.includes("fetch failed") ||
+        msg.includes("ECONNRESET") ||
+        msg.includes("502") ||
+        msg.includes("503") ||
+        msg.includes("504");
+
+      if (!isRetryable || attempt === maxRetries) break;
+
+      // Exponential backoff with jitter: ~2s, ~4s (with random spread)
+      const baseDelay = Math.pow(2, attempt + 1) * 1000;
+      const jitter = Math.random() * 500;
+      console.warn(
+        `AI response attempt ${attempt + 1} failed (${msg.slice(0, 80)}), ` +
+        `retrying in ${baseDelay + jitter}ms…`
+      );
+      await new Promise((resolve) => setTimeout(resolve, baseDelay + jitter));
+    }
+  }
+
+  // All retries exhausted — send a user-facing fallback instead of ghosting.
+  console.error("All AI response retries exhausted:", lastError);
+
+  const fallbackMessage =
+    data.fallbackMessage ||
+    "I'm having trouble responding right now. Our team will get back to you shortly!";
+
   try {
-    const model = data.model || "openai/gpt-4o-mini";
-    const aiGatewayKey = workspace.ai_api_key || process.env.AI_GATEWAY_API_KEY;
-    const gw = createGateway({ apiKey: aiGatewayKey || undefined });
-    const result = await generateText({
-      model: gw(model),
-      system: data.systemPrompt || "You are a helpful customer support agent.",
-      messages: aiMessages,
-      temperature: data.temperature ?? 0.7,
-      maxOutputTokens: data.maxTokens ?? 500,
-    });
-
-    const text = result.text;
-
-    // Expose the generated text to downstream nodes as {{ai_response}}
-    context.variables = { ...(context.variables ?? {}), ai_response: text };
-
     if (data.sendDirectly !== false) {
-      // Send via Zernio REST API (same pattern as executeSendMessage)
-      const response = await zernio.messages.sendInboxMessage({
+      await zernio.messages.sendInboxMessage({
         path: { conversationId: lateConversationId },
-        body: { accountId: lateAccountId, message: text },
-      });
-
-      // Store outbound message
-      await supabase.from("messages").insert({
-        conversation_id: context.conversationId,
-        direction: "outbound",
-        text,
-        attachments: null,
-        sent_by_flow_id: context.flowId,
-        sent_by_node_id: null,
-        platform_message_id: response.data?.data?.messageId || null,
-        status: "sent",
-      });
-
-      await supabase.from("analytics_events").insert({
-        workspace_id: context.workspaceId,
-        flow_id: context.flowId,
-        contact_id: context.contactId,
-        event_type: "message_sent",
+        body: { accountId: lateAccountId, message: fallbackMessage },
       });
     }
-  } catch (error) {
-    console.error("Failed to generate or send AI response:", error);
 
     await supabase.from("messages").insert({
       conversation_id: context.conversationId,
       direction: "outbound",
-      text: "[AI response failed]",
+      text: fallbackMessage,
       sent_by_flow_id: context.flowId,
-      status: "failed",
+      status: "sent",
     });
 
     await supabase.from("analytics_events").insert({
       workspace_id: context.workspaceId,
       flow_id: context.flowId,
       contact_id: context.contactId,
-      event_type: "message_failed",
-      metadata: { error: error instanceof Error ? error.message : "Unknown error" },
+      event_type: "ai_fallback_sent",
+      metadata: {
+        error: lastError instanceof Error ? lastError.message : "Unknown error",
+        retries: maxRetries,
+      },
     });
-
-    return cancelRun(supabase, sessionId);
+  } catch (sendError) {
+    // If even the fallback can't be delivered (conversation closed, etc.),
+    // log internally without crashing.
+    console.error("Failed to send AI fallback message:", sendError);
   }
+
+  return cancelRun(supabase, sessionId);
 }

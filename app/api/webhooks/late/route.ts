@@ -77,6 +77,11 @@ interface CommentWebhookPayload {
 
 // ── Webhook handler ─────────────────────────────────────────────────────────
 
+// Vercel function timeout. The debounce (5s wait for follow-up messages) +
+// AI response natural delay (up to 12s) + Zernio API calls can take 20s+.
+// Hobby plan allows up to 300s; set 60s as a safe ceiling.
+export const maxDuration = 60;
+
 export async function POST(request: NextRequest) {
   try {
     return await handleWebhook(request);
@@ -266,9 +271,41 @@ async function processMessageEvent(
 
   // Messages are stored by Zernio (source of truth) — no local insert needed.
 
+  // ── Multi-message debounce ─────────────────────────────────────────────────
+  // People often send several short messages in quick succession ("hi" → "I saw
+  // your reel" → "can I get the worksheet?"). Responding after the first message
+  // feels robotic and misses context. Instead, wait for the user to finish their
+  // burst: count messages before and after a 5s wait. If the count increased, a
+  // newer message arrived and ITS handler will process the full burst — so this
+  // handler exits silently. The LAST handler always wins, and by then ALL
+  // messages are in the DB for the AI to see.
+  //
+  // Pattern validated by n8n community standard (3-5s debounce window).
+  if (!conversation.is_automation_paused) {
+    const DEBOUNCE_MS = 5000;
+
+    const { count: msgCountBefore } = await supabase
+      .from("messages")
+      .select("*", { count: "exact", head: true })
+      .eq("conversation_id", conversation.id);
+
+    await new Promise((resolve) => setTimeout(resolve, DEBOUNCE_MS));
+
+    const { count: msgCountAfter } = await supabase
+      .from("messages")
+      .select("*", { count: "exact", head: true })
+      .eq("conversation_id", conversation.id);
+
+    if ((msgCountAfter ?? 0) > (msgCountBefore ?? 0)) {
+      console.log(
+        `[debounce] ${msgCountAfter! - msgCountBefore!} newer message(s) ` +
+        `arrived for conversation ${conversation.id}, deferring to later handler.`
+      );
+      return;
+    }
+
   // ── Flow engine ───────────────────────────────────────────────────────────
 
-  if (!conversation.is_automation_paused) {
     const incomingMessage = {
       text: msg.text || undefined,
       postbackPayload: metadata?.postbackPayload || undefined,
