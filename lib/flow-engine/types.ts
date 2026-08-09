@@ -147,6 +147,16 @@ export interface AiResponseNodeData {
    * {{ai_response}} without double-sending. Defaults to true for back-compat.
    */
   sendDirectly?: boolean;
+  /**
+   * Max retry attempts on transient errors (429 rate limits, timeouts, 5xx).
+   * Defaults to 2 (so up to 3 total attempts with exponential backoff + jitter).
+   */
+  maxRetries?: number;
+  /**
+   * User-facing message sent when all retries are exhausted, so the contact is
+   * never silently ghosted. Defaults to a generic "trouble responding" message.
+   */
+  fallbackMessage?: string;
 }
 
 export interface EnrollSequenceNodeData {

@@ -37,7 +37,7 @@ export async function executeFlow(
     context.variables.message ??= context.incomingMessage.text;
   }
 
-  // Check for active session waiting for input
+  // Check for active session waiting for input (e.g. Smart Delay, Human Takeover)
   const { data: activeSession } = await supabase
     .from("flow_sessions")
     .select("*")
@@ -49,6 +49,31 @@ export async function executeFlow(
 
   if (activeSession) {
     return resumeSession(supabase, activeSession, context);
+  }
+
+  // Prevent concurrent flow execution: if another flow started for this
+  // contact+channel within the last COOLDOWN_SECONDS (e.g. a rapid-fire
+  // second message), skip to avoid duplicate replies and wasted AI calls.
+  // The prior flow is already in-flight and will handle the conversation.
+  const COOLDOWN_SECONDS = 5;
+  const cooldownCutoff = new Date(Date.now() - COOLDOWN_SECONDS * 1000).toISOString();
+  const { data: recentSession } = await supabase
+    .from("flow_sessions")
+    .select("id, created_at")
+    .eq("contact_id", context.contactId)
+    .eq("channel_id", context.channelId)
+    .eq("status", "active")
+    .gt("created_at", cooldownCutoff)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (recentSession) {
+    console.warn(
+      `Flow ${context.flowId} skipped: another session ${recentSession.id} ` +
+      `started ${COOLDOWN_SECONDS}s ago for the same contact+channel (rapid-fire guard).`
+    );
+    return;
   }
 
   // Load flow

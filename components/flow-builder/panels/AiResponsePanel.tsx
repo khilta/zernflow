@@ -14,6 +14,8 @@ interface AiResponsePanelData {
   maxTokens?: number;
   contextMessages?: number;
   sendDirectly?: boolean;
+  maxRetries?: number;
+  fallbackMessage?: string;
   [key: string]: unknown;
 }
 
@@ -160,6 +162,48 @@ export function AiResponsePanel({ data: rawData, onChange }: AiResponsePanelProp
           {"{{ai_response}}"}. Turn this off to only store it and send it
           yourself with a Send Message node.
         </p>
+      </div>
+
+      {/* Advanced: Retry + Fallback */}
+      <div className="space-y-3 border-t border-border pt-3">
+        <p className="text-xs font-semibold text-muted-foreground">Resilience</p>
+
+        {/* Max Retries */}
+        <div>
+          <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
+            Max Retries
+          </label>
+          <input
+            type="number"
+            value={data.maxRetries ?? 2}
+            onChange={(e) => onChange({ ...data, maxRetries: parseInt(e.target.value) || 0 })}
+            min={0}
+            max={5}
+            className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+          <p className="mt-1 text-[11px] text-muted-foreground/60">
+            Retries on rate limits (429) and timeouts with exponential backoff.
+            0 = no retries.
+          </p>
+        </div>
+
+        {/* Fallback Message */}
+        <div>
+          <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
+            Fallback Message
+          </label>
+          <textarea
+            value={data.fallbackMessage ?? ""}
+            onChange={(e) => onChange({ ...data, fallbackMessage: e.target.value })}
+            placeholder="I'm having trouble responding right now. Our team will get back to you shortly!"
+            rows={2}
+            className="w-full resize-none rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+          <p className="mt-1 text-[11px] text-muted-foreground/60">
+            Sent to the contact when all retries fail, so they&apos;re never left
+            without a reply. Leave empty for the default message.
+          </p>
+        </div>
       </div>
     </div>
   );
