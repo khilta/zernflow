@@ -6,6 +6,7 @@ import { matchTrigger } from "@/lib/flow-engine/trigger-matcher";
 import { resolveWebhookSecret, verifyWebhookSignature } from "@/lib/zernio-webhook";
 import { upsertContactForSender } from "@/lib/inbox-sync";
 import { processComment } from "@/lib/comment-processor";
+import { createZernioClient } from "@/lib/zernio-client";
 import type { Database } from "@/lib/types/database";
 import { messagePreview } from "@/lib/message-preview";
 
@@ -285,7 +286,10 @@ async function processMessageEvent(
       supabase,
       channel.workspace_id,
       contactId,
-      msg.text || undefined
+      msg.text || undefined,
+      conversation.id,
+      conv.id,
+      account.id,
     );
 
     if (!handled) {
@@ -388,13 +392,16 @@ async function handleGlobalKeywords(
   supabase: Awaited<ReturnType<typeof createServiceClient>>,
   workspaceId: string,
   contactId: string,
-  text: string | undefined
+  text: string | undefined,
+  conversationId?: string,
+  lateConversationId?: string,
+  lateAccountId?: string,
 ): Promise<boolean> {
   if (!text) return false;
 
   const { data: workspace } = await supabase
     .from("workspaces")
-    .select("global_keywords")
+    .select("global_keywords, late_api_key_encrypted")
     .eq("id", workspaceId)
     .single();
 
@@ -415,6 +422,18 @@ async function handleGlobalKeywords(
           .from("contacts")
           .update({ is_subscribed: false })
           .eq("id", contactId);
+
+        // Send confirmation DM so the user knows they were unsubscribed
+        await sendKeywordConfirmation(
+          workspace.late_api_key_encrypted,
+          lateConversationId,
+          lateAccountId,
+          conversationId,
+          contactId,
+          workspaceId,
+          supabase,
+          "You've been unsubscribed from our messages. You won't receive automated DMs anymore. If you change your mind, just send \"start\" to resubscribe!",
+        );
         return true;
       }
       if (kw.action === "subscribe") {
@@ -422,6 +441,17 @@ async function handleGlobalKeywords(
           .from("contacts")
           .update({ is_subscribed: true })
           .eq("id", contactId);
+
+        await sendKeywordConfirmation(
+          workspace.late_api_key_encrypted,
+          lateConversationId,
+          lateAccountId,
+          conversationId,
+          contactId,
+          workspaceId,
+          supabase,
+          "You're back on our list! 🎉 Send us a message anytime!",
+        );
         return true;
       }
       return false;
@@ -429,4 +459,38 @@ async function handleGlobalKeywords(
   }
 
   return false;
+}
+
+/**
+ * Send a confirmation DM for global keyword actions (unsubscribe/subscribe).
+ * Silently skips if conversation info isn't available (e.g. comment context).
+ */
+async function sendKeywordConfirmation(
+  apiKey: string | null,
+  lateConversationId: string | undefined,
+  lateAccountId: string | undefined,
+  conversationId: string | undefined,
+  contactId: string,
+  workspaceId: string,
+  supabase: Awaited<ReturnType<typeof createServiceClient>>,
+  message: string,
+) {
+  if (!apiKey || !lateConversationId || !lateAccountId || !conversationId) return;
+
+  try {
+    const zernio = createZernioClient(apiKey);
+    await zernio.messages.sendInboxMessage({
+      path: { conversationId: lateConversationId },
+      body: { accountId: lateAccountId, message },
+    });
+
+    await supabase.from("messages").insert({
+      conversation_id: conversationId,
+      direction: "outbound",
+      text: message,
+      status: "sent",
+    });
+  } catch (err) {
+    console.error("Failed to send keyword confirmation:", err);
+  }
 }

@@ -76,6 +76,23 @@ export async function executeFlow(
     context.lateAccountId = channel.late_account_id;
   }
 
+  // Seed contact_name from the contact record so {{contact_name}} resolves in
+  // every message template. Comment flows may already seed commenter_name; this
+  // covers DM-triggered flows and is idempotent.
+  if (!context.variables?.contact_name) {
+    const { data: contactForName } = await supabase
+      .from("contacts")
+      .select("display_name")
+      .eq("id", context.contactId)
+      .single();
+    if (contactForName?.display_name) {
+      context.variables = {
+        ...(context.variables || {}),
+        contact_name: contactForName.display_name,
+      };
+    }
+  }
+
   // Resolve late_conversation_id from the conversation record if not already set
   if (!context.lateConversationId && context.conversationId) {
     const { data: conversation } = await supabase
@@ -413,6 +430,9 @@ async function sendFirstMessageAsPrivateReply(
       event_type: "message_sent",
     });
   } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : "Unknown error";
+    const isWindowError = errorMsg.includes("outside of allowed window");
+
     console.error("Failed to send comment-context message as private reply:", error);
     await supabase.from("messages").insert({
       conversation_id: context.conversationId,
@@ -421,6 +441,30 @@ async function sendFirstMessageAsPrivateReply(
       sent_by_flow_id: context.flowId,
       status: "failed",
     });
+
+    await supabase.from("analytics_events").insert({
+      workspace_id: context.workspaceId,
+      flow_id: context.flowId,
+      contact_id: context.contactId,
+      event_type: "message_failed",
+      metadata: {
+        error: errorMsg,
+        ...(isWindowError ? { reason: "24h_window_closed" } : {}),
+      },
+    });
+
+    if (isWindowError) {
+      await supabase.from("analytics_events").insert({
+        workspace_id: context.workspaceId,
+        flow_id: context.flowId,
+        contact_id: context.contactId,
+        event_type: "needs_manual_followup",
+        metadata: {
+          reason: "24h_window_closed",
+          conversation_id: context.conversationId,
+        },
+      });
+    }
     return;
   }
 
@@ -552,6 +596,9 @@ async function executeSendMessage(
         event_type: "message_sent",
       });
     } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : "Unknown error";
+      const isWindowError = errorMsg.includes("outside of allowed window");
+
       console.error("Failed to send message:", error);
       await supabase.from("messages").insert({
         conversation_id: context.conversationId,
@@ -566,8 +613,24 @@ async function executeSendMessage(
         flow_id: context.flowId,
         contact_id: context.contactId,
         event_type: "message_failed",
-        metadata: { error: error instanceof Error ? error.message : "Unknown error" },
+        metadata: {
+          error: errorMsg,
+          ...(isWindowError ? { reason: "24h_window_closed" } : {}),
+        },
       });
+
+      if (isWindowError) {
+        await supabase.from("analytics_events").insert({
+          workspace_id: context.workspaceId,
+          flow_id: context.flowId,
+          contact_id: context.contactId,
+          event_type: "needs_manual_followup",
+          metadata: {
+            reason: "24h_window_closed",
+            conversation_id: context.conversationId,
+          },
+        });
+      }
     }
 
     // Small delay between messages
