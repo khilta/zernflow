@@ -100,16 +100,61 @@ export async function executeAiResponse(
   try {
     const model = data.model || "openai/gpt-4o-mini";
     const aiGatewayKey = workspace.ai_api_key || process.env.AI_GATEWAY_API_KEY;
-    const gw = createGateway({ apiKey: aiGatewayKey || undefined });
-    const result = await generateText({
-      model: gw(model),
-      system: data.systemPrompt || "You are a helpful customer support agent.",
-      messages: aiMessages,
-      temperature: data.temperature ?? 0.7,
-      maxOutputTokens: data.maxTokens ?? 500,
-    });
 
-    const text = result.text;
+    // Retry with exponential backoff for transient errors (rate limits,
+    // timeouts, 5xx responses). Classifies errors so permanent failures
+    // (auth, bad request) don't waste retry attempts.
+    const maxRetries = data.maxRetries ?? 3;
+    let lastError: Error | null = null;
+
+    const isTransient = (err: unknown): boolean => {
+      const msg = err instanceof Error ? err.message : String(err);
+      const transient = [
+        "rate limit", "rate_limit", "429", "timeout", "timed out",
+        "ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "fetch failed",
+        "503", "502", "500", "network", "temporarily unavailable",
+        "overloaded", "capacity",
+      ];
+      return transient.some((t) => msg.toLowerCase().includes(t.toLowerCase()));
+    };
+
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    let text = "";
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const gw = createGateway({ apiKey: aiGatewayKey || undefined });
+        const result = await generateText({
+          model: gw(model),
+          system: data.systemPrompt || "You are a helpful customer support agent.",
+          messages: aiMessages,
+          temperature: data.temperature ?? 0.7,
+          maxOutputTokens: data.maxTokens ?? 500,
+        });
+
+        text = result.text;
+        lastError = null;
+        break; // success
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+
+        if (attempt < maxRetries && isTransient(err)) {
+          // Exponential backoff: 1s, 2s, 4s, 8s...
+          const backoffMs = Math.min(1000 * Math.pow(2, attempt), 8000);
+          await sleep(backoffMs);
+          continue;
+        }
+
+        // Permanent error or out of retries — stop retrying
+        break;
+      }
+    }
+
+    // All retries exhausted — send fallback instead of ghosting the contact
+    if (lastError) {
+      throw lastError;
+    }
 
     // Expose the generated text to downstream nodes as {{ai_response}}
     context.variables = { ...(context.variables ?? {}), ai_response: text };
@@ -143,20 +188,40 @@ export async function executeAiResponse(
   } catch (error) {
     console.error("Failed to generate or send AI response:", error);
 
-    await supabase.from("messages").insert({
-      conversation_id: context.conversationId,
-      direction: "outbound",
-      text: "[AI response failed]",
-      sent_by_flow_id: context.flowId,
-      status: "failed",
-    });
+    // Send a user-facing fallback instead of "[AI response failed]" so the
+    // contact is not left hanging. Falls back to a generic message.
+    const fallbackMessage =
+      data.fallbackMessage ||
+      "I'm having trouble responding right now, but I'll get back to you shortly! 😊";
+
+    // Try to send the fallback via Zernio
+    try {
+      await zernio.messages.sendInboxMessage({
+        path: { conversationId: lateConversationId },
+        body: { accountId: lateAccountId, message: fallbackMessage },
+      });
+
+      await supabase.from("messages").insert({
+        conversation_id: context.conversationId,
+        direction: "outbound",
+        text: fallbackMessage,
+        sent_by_flow_id: context.flowId,
+        platform_message_id: null,
+        status: "sent",
+      });
+    } catch (sendErr) {
+      console.error("Failed to send AI fallback message:", sendErr);
+    }
 
     await supabase.from("analytics_events").insert({
       workspace_id: context.workspaceId,
       flow_id: context.flowId,
       contact_id: context.contactId,
       event_type: "message_failed",
-      metadata: { error: error instanceof Error ? error.message : "Unknown error" },
+      metadata: {
+        error: error instanceof Error ? error.message : "Unknown error",
+        fallback_sent: true,
+      },
     });
 
     return cancelRun(supabase, sessionId);

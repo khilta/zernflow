@@ -60,11 +60,13 @@ export async function GET(request: NextRequest) {
       (res.data as { data?: unknown[] })?.data ??
       [];
 
-    // Map Zernio messages to the shape the inbox UI expects
-    const messages = zernioMessages.map((m: any) => ({
+    // Map Zernio messages to the shape the inbox UI expects.
+    // Accept both "outgoing" (Zernio's actual enum value) and "outbound"
+    // (legacy spelling) so our own replies are correctly shown on our side.
+    const zernioMapped = zernioMessages.map((m: any) => ({
       id: m.id,
       conversation_id: conversationId,
-      direction: m.direction === "outbound" ? "outbound" : "inbound",
+      direction: m.direction === "outgoing" || m.direction === "outbound" ? "outbound" : "inbound",
       text: m.text ?? m.message ?? null,
       attachments: m.attachments?.length ? m.attachments : null,
       quick_reply_payload: null,
@@ -78,7 +80,46 @@ export async function GET(request: NextRequest) {
       created_at: m.sentAt ?? m.createdAt ?? new Date().toISOString(),
     }));
 
-    return NextResponse.json(messages);
+    // Merge with locally stored messages. Zernio is the source of truth but
+    // its API can lag or miss messages (especially outbound sends). The local
+    // table has messages the webhook stored (inbound) and flow engine stored
+    // (outbound). Dedup on platform_message_id so messages that appear in both
+    // don't render twice.
+    const { data: localMessages } = await supabase
+      .from("messages")
+      .select("*")
+      .eq("conversation_id", conversationId)
+      .order("created_at", { ascending: true });
+
+    const seenIds = new Set<string>();
+    const merged: Array<Record<string, unknown>> = [];
+
+    for (const m of zernioMapped) {
+      const key = (m.platform_message_id || m.id) as string | null;
+      if (key && !seenIds.has(key)) {
+        seenIds.add(key);
+        merged.push(m as unknown as Record<string, unknown>);
+      }
+    }
+
+    if (localMessages) {
+      for (const m of localMessages) {
+        const key = m.platform_message_id || m.id;
+        if (key && !seenIds.has(key)) {
+          seenIds.add(key);
+          merged.push(m as unknown as Record<string, unknown>);
+        }
+      }
+    }
+
+    // Sort merged messages by created_at for consistent chronological display
+    merged.sort((a, b) => {
+      const aTime = new Date(a.created_at as string).getTime();
+      const bTime = new Date(b.created_at as string).getTime();
+      return aTime - bTime;
+    });
+
+    return NextResponse.json(merged);
   } catch (error) {
     console.error("Failed to fetch messages from Zernio API:", error);
     return NextResponse.json(

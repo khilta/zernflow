@@ -6,6 +6,7 @@ import { matchTrigger } from "@/lib/flow-engine/trigger-matcher";
 import { resolveWebhookSecret, verifyWebhookSignature } from "@/lib/zernio-webhook";
 import { upsertContactForSender } from "@/lib/inbox-sync";
 import { processComment } from "@/lib/comment-processor";
+import { createZernioClient } from "@/lib/zernio-client";
 import type { Database } from "@/lib/types/database";
 import { messagePreview } from "@/lib/message-preview";
 
@@ -137,8 +138,10 @@ async function handleWebhook(request: NextRequest) {
 
   const { message: msg, account } = payload;
 
-  // Ignore outbound messages (sent by the bot itself) to prevent loops
-  if (msg.direction === "outbound") {
+  // Ignore outbound messages (sent by the bot itself) to prevent loops.
+  // Accept both "outgoing" (Zernio's actual enum value) and the legacy
+  // "outbound" spelling for resilience.
+  if (msg.direction === "outgoing" || msg.direction === "outbound") {
     return NextResponse.json({ ok: true, skipped: true });
   }
 
@@ -264,7 +267,27 @@ async function processMessageEvent(
       .then(() => {});
   }
 
-  // Messages are stored by Zernio (source of truth) — no local insert needed.
+  // Store the incoming DM locally so the inbox has a reliable history even
+  // when Zernio's API returns stale or incomplete data. Use platformMessageId
+  // (not msg.id which is Zernio's internal id) so it matches what the messages
+  // route returns and dedup works when both sources are merged.
+  const { data: existingMsg } = await supabase
+    .from("messages")
+    .select("id")
+    .eq("conversation_id", conversation.id)
+    .eq("platform_message_id", msg.platformMessageId || msg.id)
+    .maybeSingle();
+
+  if (!existingMsg) {
+    await supabase.from("messages").insert({
+      conversation_id: conversation.id,
+      direction: "inbound",
+      text: msg.text,
+      attachments: msg.attachments?.length ? msg.attachments : null,
+      platform_message_id: msg.platformMessageId || msg.id,
+      status: "sent",
+    });
+  }
 
   // ── Flow engine ───────────────────────────────────────────────────────────
 
@@ -281,12 +304,22 @@ async function processMessageEvent(
       },
     };
 
-    const handled = await handleGlobalKeywords(
+    // Look up workspace API key for keyword confirmation DMs
+    const { data: kwWorkspace } = await supabase
+      .from("workspaces")
+      .select("late_api_key_encrypted")
+      .eq("id", channel.workspace_id)
+      .single();
+
+    const handled = await handleGlobalKeywords({
       supabase,
-      channel.workspace_id,
+      workspaceId: channel.workspace_id,
+      workspaceApiKey: kwWorkspace?.late_api_key_encrypted ?? null,
+      lateConversationId: conv.id,
+      lateAccountId: account.id,
       contactId,
-      msg.text || undefined
-    );
+      text: msg.text || undefined,
+    });
 
     if (!handled) {
       const trigger = await matchTrigger(supabase, {
@@ -310,7 +343,30 @@ async function processMessageEvent(
             lateAccountId: account.id,
           });
         } catch (err) {
-          console.error("Flow execution error:", err);
+          const errMsg = err instanceof Error ? err.message : String(err);
+
+          // Distinguish 24h-window failures from other errors. Meta only
+          // allows businesses to message within 24h of the contact's last
+          // message; sending after the window fails with a specific error.
+          // Logging it distinctly surfaces this operational gap instead of
+          // collapsing it into a generic message_failed event.
+          const is24hWindowError = /24.*hour|window|outside.*allowed/i.test(errMsg);
+
+          console.error("Flow execution error:", errMsg);
+
+          await supabase.from("analytics_events").insert({
+            workspace_id: channel.workspace_id,
+            contact_id: contactId,
+            flow_id: trigger.flow_id,
+            event_type: is24hWindowError
+              ? "message_failed_24h_window"
+              : "message_failed",
+            metadata: {
+              error: errMsg,
+              triggerId: trigger.id,
+              ...(is24hWindowError ? { reason: "24h_messaging_window" } : {}),
+            },
+          });
         }
       }
     }
@@ -384,12 +440,39 @@ async function handleCommentWebhook(
 
 // ── Global keywords ─────────────────────────────────────────────────────────
 
-async function handleGlobalKeywords(
-  supabase: Awaited<ReturnType<typeof createServiceClient>>,
-  workspaceId: string,
-  contactId: string,
-  text: string | undefined
-): Promise<boolean> {
+/**
+ * Context object for keyword confirmation DMs. Passing a single object avoids
+ * the "too many positional parameters" problem where a caller silently passes
+ * arguments in the wrong order.
+ */
+interface KeywordConfirmationParams {
+  supabase: Awaited<ReturnType<typeof createServiceClient>>;
+  workspaceId: string;
+  workspaceApiKey: string | null;
+  lateConversationId: string | null;
+  lateAccountId: string | null;
+  contactId: string;
+  text: string | undefined;
+}
+
+/**
+ * Checks the incoming text against the workspace's global keywords. When a
+ * STOP/START keyword matches, updates the contact's subscription and sends a
+ * confirmation DM so the contact knows their opt-in/opt-out was received.
+ *
+ * The confirmation DM is only sent when we have a late_conversation_id (i.e.
+ * a DM context). Comment-triggered flows do not have one at keyword-check
+ * time, so the confirmation is a no-op there — the early return below guards it.
+ */
+async function handleGlobalKeywords({
+  supabase,
+  workspaceId,
+  workspaceApiKey,
+  lateConversationId,
+  lateAccountId,
+  contactId,
+  text,
+}: KeywordConfirmationParams): Promise<boolean> {
   if (!text) return false;
 
   const { data: workspace } = await supabase
@@ -415,6 +498,17 @@ async function handleGlobalKeywords(
           .from("contacts")
           .update({ is_subscribed: false })
           .eq("id", contactId);
+
+        // Send confirmation DM. No-ops when there is no DM conversation yet
+        // (e.g. keyword sent on a comment-triggered flow) or when outside the
+        // 24h messaging window.
+        await sendKeywordConfirmation({
+          workspaceApiKey,
+          lateConversationId,
+          lateAccountId,
+          message: "You've been unsubscribed from our messages. Text START to resubscribe anytime.",
+        });
+
         return true;
       }
       if (kw.action === "subscribe") {
@@ -422,6 +516,14 @@ async function handleGlobalKeywords(
           .from("contacts")
           .update({ is_subscribed: true })
           .eq("id", contactId);
+
+        await sendKeywordConfirmation({
+          workspaceApiKey,
+          lateConversationId,
+          lateAccountId,
+          message: "You're subscribed! Reply STOP anytime to opt out.",
+        });
+
         return true;
       }
       return false;
@@ -429,4 +531,35 @@ async function handleGlobalKeywords(
   }
 
   return false;
+}
+
+/**
+ * Sends a single confirmation DM. Silently no-ops when the prerequisites for
+ * sending (API key, conversation ID, account ID) are missing — this happens
+ * for comment-triggered flows where no DM conversation exists yet.
+ */
+async function sendKeywordConfirmation({
+  workspaceApiKey,
+  lateConversationId,
+  lateAccountId,
+  message,
+}: {
+  workspaceApiKey: string | null;
+  lateConversationId: string | null;
+  lateAccountId: string | null;
+  message: string;
+}): Promise<void> {
+  if (!workspaceApiKey || !lateConversationId || !lateAccountId) return;
+
+  try {
+    const zernio = createZernioClient(workspaceApiKey);
+    await zernio.messages.sendInboxMessage({
+      path: { conversationId: lateConversationId },
+      body: { accountId: lateAccountId, message },
+    });
+  } catch (err) {
+    // Most likely cause is the 24h messaging window having elapsed; log and
+    // move on rather than surfacing this as a flow failure.
+    console.error("Failed to send keyword confirmation DM:", err);
+  }
 }

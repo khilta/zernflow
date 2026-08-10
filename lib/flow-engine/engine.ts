@@ -37,6 +37,15 @@ export async function executeFlow(
     context.variables.message ??= context.incomingMessage.text;
   }
 
+  // Seed {{contact_name}} from the incoming message sender name so comment
+  // flows (which set variables.commenter_name) and DM flows can personalize
+  // their messages without each node having to look up the contact. Idempotent:
+  // only set if not already present, so comment-triggered flows that seed
+  // {{commenter_name}} keep their own value and DM flows get the sender name.
+  if (context.incomingMessage.sender?.name) {
+    context.variables.contact_name ??= context.incomingMessage.sender.name;
+  }
+
   // Check for active session waiting for input
   const { data: activeSession } = await supabase
     .from("flow_sessions")

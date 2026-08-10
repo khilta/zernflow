@@ -215,6 +215,16 @@ export async function processComment({
 
     let dmSent = false;
     if (conversation) {
+      // Store the triggering comment as an inbound message so the inbox
+      // shows what the contact commented, not just the DM flow that followed.
+      await supabase.from("messages").insert({
+        conversation_id: conversation.id,
+        direction: "inbound",
+        text: comment.text,
+        platform_message_id: `comment_${comment.id}`,
+        status: "sent",
+      });
+
       try {
         await executeFlow(supabase, {
           triggerId: matchedTrigger.id,
