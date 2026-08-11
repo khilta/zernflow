@@ -396,10 +396,16 @@ async function handleCommentWebhook(
 
   // Prevent loops: our own comments (e.g. the configured public reply) also
   // arrive as comment.received and must never re-trigger a flow.
-  if (
-    payload.comment.author?.username &&
-    payload.comment.author.username === channel.username
-  ) {
+  // Check by username, author name, AND author id — Facebook page comments
+  // often arrive with username=null, so username-only checks fail silently.
+  const authorName = payload.comment.author?.name?.trim();
+  const authorUsername = payload.comment.author?.username?.trim();
+  const authorId = payload.comment.author?.id;
+  const isOwnComment =
+    (authorUsername && authorUsername === channel.username) ||
+    (authorName && channel.display_name && authorName === channel.display_name) ||
+    (authorId && channel.late_account_id && authorId === payload.account.id);
+  if (isOwnComment) {
     return NextResponse.json({ ok: true, skipped: true, reason: "own_comment" });
   }
 

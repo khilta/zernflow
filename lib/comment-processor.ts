@@ -74,7 +74,7 @@ export async function getActiveCommentTriggers(
 
 export interface ProcessCommentResult {
   matched: boolean;
-  skipped?: "already_processed";
+  skipped?: "already_processed" | "own_comment";
   triggerId?: string;
   error?: string;
 }
@@ -103,6 +103,18 @@ export async function processComment({
     .maybeSingle();
 
   if (alreadyLogged) return { matched: false, skipped: "already_processed" };
+
+  // Defense-in-depth: skip comments authored by our own account.
+  // The webhook handler does this check first, but we also check here so that
+  // even if the webhook guard is bypassed (e.g., different author field shape),
+  // we never process our own bot replies. This prevents infinite self-reply loops.
+  if (comment.author.username && comment.author.username === channel.username) {
+    return { matched: false, skipped: "own_comment" };
+  }
+  if (comment.author.name && channel.display_name &&
+      comment.author.name.trim() === channel.display_name.trim()) {
+    return { matched: false, skipped: "own_comment" };
+  }
 
   const triggers = await getActiveCommentTriggers(supabase, {
     channelId: channel.id,
