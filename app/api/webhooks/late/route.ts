@@ -162,6 +162,8 @@ async function handleWebhook(request: NextRequest) {
   // Prevent loops: if the sender is another connected account in this
   // workspace, skip. This happens when both sides of a DM conversation
   // are connected (e.g. during testing).
+  // NOTE: Facebook page DMs can arrive with sender.username=null (same bug
+  // as comments), so we also check by sender.id against all workspace channels.
   if (msg.sender.username) {
     const { data: senderChannel } = await supabase
       .from("channels")
@@ -172,6 +174,22 @@ async function handleWebhook(request: NextRequest) {
       .maybeSingle();
 
     if (senderChannel) {
+      return NextResponse.json({ ok: true, skipped: true, reason: "sender_is_own_account" });
+    }
+  }
+  // Defense-in-depth: also check by late_account_id in case username is null
+  // (Facebook page accounts). Any sender whose account ID matches a connected
+  // channel in this workspace is our own bot.
+  if (msg.sender.id) {
+    const { data: senderChannelById } = await supabase
+      .from("channels")
+      .select("id")
+      .eq("workspace_id", channel.workspace_id)
+      .eq("late_account_id", msg.sender.id)
+      .eq("is_active", true)
+      .maybeSingle();
+
+    if (senderChannelById) {
       return NextResponse.json({ ok: true, skipped: true, reason: "sender_is_own_account" });
     }
   }
