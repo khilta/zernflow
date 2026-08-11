@@ -414,15 +414,23 @@ async function handleCommentWebhook(
 
   // Prevent loops: our own comments (e.g. the configured public reply) also
   // arrive as comment.received and must never re-trigger a flow.
-  // Check by username, author name, AND author id — Facebook page comments
-  // often arrive with username=null, so username-only checks fail silently.
+  // Facebook page comments arrive with username=null (Meta strips author
+  // identity from page-owned comments by design — Graph API v26.0 doesn't
+  // even list a `from` field in the Comment reference).
+  // We check THREE identifiers for defense-in-depth:
+  //   1. username (works for Instagram, fails for Facebook)
+  //   2. display_name (works for both, but fragile — string match)
+  //   3. platform_page_id (works for Facebook — author.id = FB Page ID)
+  // NOTE: payload.account.id is the Zernio internal account ID, NOT the FB
+  // Page ID. author.id is the FB Page ID. They are DIFFERENT ID SYSTEMS and
+  // must never be compared to each other.
   const authorName = payload.comment.author?.name?.trim();
   const authorUsername = payload.comment.author?.username?.trim();
   const authorId = payload.comment.author?.id;
   const isOwnComment =
     (authorUsername && authorUsername === channel.username) ||
     (authorName && channel.display_name && authorName === channel.display_name) ||
-    (authorId && channel.late_account_id && authorId === payload.account.id);
+    (authorId && channel.platform_page_id && authorId === channel.platform_page_id);
   if (isOwnComment) {
     return NextResponse.json({ ok: true, skipped: true, reason: "own_comment" });
   }

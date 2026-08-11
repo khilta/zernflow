@@ -80,45 +80,6 @@ export interface ProcessCommentResult {
 }
 
 /**
- * Circuit breaker: count how many comment-triggered replies have already been
- * sent to the SAME author on the SAME post. If a single author has received
- * > MAX_REPLIES replies on one post in the lookback window, we assume a loop
- * and refuse to process further comments from that author on that post.
- *
- * This is the last line of defense — it catches self-reply loops even if the
- * identity checks above somehow fail (e.g., Meta changes their API payload
- * shape, or a new platform sends author fields we don't expect).
- *
- * Industry pattern: "Circuit Breaker" rated High reliability impact by
- * InvokeBot's webhook reliability research; used by Shopify & PagerDuty.
- */
-const RATE_LIMIT_MAX_REPLIES = 3;
-const RATE_LIMIT_WINDOW_MINUTES = 30;
-
-async function circuitBreakerTripped(
-  supabase: SupabaseClient<Database>,
-  channel: Channel,
-  comment: IncomingComment,
-): Promise<boolean> {
-  if (!comment.author.id) return false;
-
-  const windowStart = new Date(
-    Date.now() - RATE_LIMIT_WINDOW_MINUTES * 60 * 1000,
-  ).toISOString();
-
-  const { count } = await supabase
-    .from("comment_logs")
-    .select("*", { count: "exact", head: true })
-    .eq("channel_id", channel.id)
-    .eq("post_id", comment.postId)
-    .eq("author_id", comment.author.id)
-    .eq("reply_sent", true)
-    .gte("created_at", windowStart);
-
-  return (count ?? 0) >= RATE_LIMIT_MAX_REPLIES;
-}
-
-/**
  * Process one inbound comment against the channel's comment_keyword triggers:
  * upsert the contact, optionally post the configured public reply, and execute
  * the flow (which sends the DM via its privateReply node using the comment_id
@@ -154,16 +115,34 @@ export async function processComment({
       comment.author.name.trim() === channel.display_name.trim()) {
     return { matched: false, skipped: "own_comment" };
   }
+  // Check by platform Page ID — Facebook sends author.id = FB Page ID for
+  // page-owned comments. This is the most reliable check (unlike username
+  // which is null, or display_name which is a fragile string match).
+  if (comment.author.id && channel.platform_page_id &&
+      comment.author.id === channel.platform_page_id) {
+    return { matched: false, skipped: "own_comment" };
+  }
 
-  // ── Circuit breaker (rate-limit) ──────────────────────────────────────────
-  // Final safety net: if the same author has already received ≥3 bot replies
-  // on the same post in the last 30 min, refuse to reply again. This catches
-  // self-reply loops that slip past the identity checks above.
-  if (await circuitBreakerTripped(supabase, channel, comment)) {
-    console.error(
-      `[circuit-breaker] Rate limit tripped for author ${comment.author.id} on post ${comment.postId} — possible loop detected, refusing to reply`,
-    );
-    return { matched: false, skipped: "rate_limited" };
+  // ── One-reply-per-user-per-post rule ───────────────────────────────────────
+  // The bot should reply to each user ONCE on each post. If we've already
+  // replied to this author on this post, don't reply again. This is both
+  // a UX feature (no spam) and the ultimate loop prevention — even if all
+  // identity checks above somehow fail, the bot can only ever send 1 reply
+  // per user per post, making loops mathematically impossible.
+  if (comment.author.id) {
+    const { count: existingReplies } = await supabase
+      .from("comment_logs")
+      .select("*", { count: "exact", head: true })
+      .eq("channel_id", channel.id)
+      .eq("post_id", comment.postId)
+      .eq("author_id", comment.author.id)
+      .eq("reply_sent", true);
+    if ((existingReplies ?? 0) >= 1) {
+      console.log(
+        `[dedup] Already replied to author ${comment.author.id} on post ${comment.postId} — skipping`,
+      );
+      return { matched: false, skipped: "rate_limited" };
+    }
   }
 
   const triggers = await getActiveCommentTriggers(supabase, {
