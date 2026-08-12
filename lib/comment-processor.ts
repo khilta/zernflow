@@ -275,23 +275,33 @@ export async function processComment({
   // different matching keywords) sends duplicate worksheet DMs — which looks
   // spammy and can hurt account reputation.
   //
-  // IMPORTANT: We only block if dm_sent=true (DM actually delivered). If a
-  // previous DM FAILED (dm_sent=false), the user must be allowed to retry.
-  // Blocking on reply_sent=true alone would permanently lock out users whose
-  // DM failed on first attempt (phantom lockout bug).
+  // We block in TWO cases:
+  //  1. dm_sent=true → DM already delivered successfully
+  //  2. matched_trigger_id IS NOT NULL AND created <5min ago → flow in progress
+  //     (prevents race condition when two comments arrive seconds apart)
+  // Case 2 has a 5-minute TTL so a permanently failed DM (dm_sent stays false)
+  // can be retried after the flow finishes.
   if (comment.author.id) {
     const { data: existingLogs } = await supabase
       .from("comment_logs")
-      .select("dm_sent, reply_sent")
+      .select("dm_sent, reply_sent, created_at, matched_trigger_id")
       .eq("channel_id", channel.id)
       .eq("post_id", comment.postId)
       .eq("author_id", comment.author.id)
-      .eq("dm_sent", true);  // Only block if DM was actually delivered
-    if ((existingLogs?.length ?? 0) >= 1) {
-      console.log(
-        `[dedup] Already sent DM to author ${comment.author.id} on post ${comment.postId} — skipping`,
+      .not("matched_trigger_id", "is", null);
+    if (existingLogs && existingLogs.length > 0) {
+      const hasDelivered = existingLogs.some((l) => l.dm_sent);
+      const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      const hasInProgress = existingLogs.some(
+        (l) => !l.dm_sent && l.created_at > fiveMinAgo
       );
-      return { matched: false, skipped: "rate_limited" };
+      if (hasDelivered || hasInProgress) {
+        console.log(
+          `[dedup] Author ${comment.author.id} on post ${comment.postId}: ` +
+          `${hasDelivered ? "DM already sent" : "flow in progress"} — skipping`,
+        );
+        return { matched: false, skipped: "rate_limited" };
+      }
     }
   }
 
