@@ -274,17 +274,22 @@ export async function processComment({
   // leave. Without this, commenting the same keyword twice (or commenting two
   // different matching keywords) sends duplicate worksheet DMs — which looks
   // spammy and can hurt account reputation.
+  //
+  // IMPORTANT: We only block if dm_sent=true (DM actually delivered). If a
+  // previous DM FAILED (dm_sent=false), the user must be allowed to retry.
+  // Blocking on reply_sent=true alone would permanently lock out users whose
+  // DM failed on first attempt (phantom lockout bug).
   if (comment.author.id) {
-    const { count: existingInteractions } = await supabase
+    const { data: existingLogs } = await supabase
       .from("comment_logs")
-      .select("*", { count: "exact", head: true })
+      .select("dm_sent, reply_sent")
       .eq("channel_id", channel.id)
       .eq("post_id", comment.postId)
       .eq("author_id", comment.author.id)
-      .or("dm_sent.eq.true,reply_sent.eq.true");
-    if ((existingInteractions ?? 0) >= 1) {
+      .eq("dm_sent", true);  // Only block if DM was actually delivered
+    if ((existingLogs?.length ?? 0) >= 1) {
       console.log(
-        `[dedup] Already sent DM/reply to author ${comment.author.id} on post ${comment.postId} — skipping`,
+        `[dedup] Already sent DM to author ${comment.author.id} on post ${comment.postId} — skipping`,
       );
       return { matched: false, skipped: "rate_limited" };
     }
@@ -446,12 +451,14 @@ export async function processComment({
       // Claim the comment log BEFORE the flow runs. This closes a race condition
       // where two comments from the same user arrive in quick succession (seconds
       // apart), both pass the dedup check above (because neither log is written
-      // yet), and both trigger a DM. By writing the log with dm_sent=true now,
-      // the second comment's dedup check will find it and skip.
+      // yet), and both trigger a DM. We write dm_sent=false initially — the dedup
+      // above already checks dm_sent=true, so a concurrent comment from a DIFFERENT
+      // post will pass correctly. For the same post, the reply_sent guard prevents
+      // duplicate public replies.
       await logComment({
         supabase, channel, comment,
         triggerId: matchedTrigger.id,
-        dmSent: true,
+        dmSent: false,  // Will be updated to true ONLY if DM actually succeeds
         replySent,
       });
 
@@ -479,16 +486,25 @@ export async function processComment({
             post_id: comment.postId,
           },
         });
-        dmSent = true;
+
+        // Verify the DM was actually sent by checking the messages table.
+        // executeSendMessage may swallow errors internally (its own try/catch
+        // logs the failure but doesn't throw), so we can't rely on executeFlow
+        // throwing. Query the actual message status.
+        const { data: recentMessages } = await supabase
+          .from("messages")
+          .select("status")
+          .eq("conversation_id", conversation.id)
+          .eq("direction", "outbound")
+          .eq("sent_by_flow_id", matchedTrigger.flow_id)
+          .gte("created_at", new Date(Date.now() - 60000).toISOString()) // last 60s
+          .order("created_at", { ascending: false })
+          .limit(1);
+
+        dmSent = recentMessages?.[0]?.status === "sent";
       } catch (err) {
         console.error("Failed to execute comment flow:", err);
-        // Flow failed — update the log to reflect dm_sent=false
-        await logComment({
-          supabase, channel, comment,
-          triggerId: matchedTrigger.id,
-          dmSent: false,
-          replySent,
-        });
+        dmSent = false;
       }
     }
 

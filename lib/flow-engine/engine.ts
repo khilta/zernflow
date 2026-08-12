@@ -430,7 +430,19 @@ async function sendFirstMessageAsPrivateReply(
       sent_by_flow_id: context.flowId,
       status: "failed",
     });
-    return;
+
+    await supabase.from("analytics_events").insert({
+      workspace_id: context.workspaceId,
+      flow_id: context.flowId,
+      contact_id: context.contactId,
+      event_type: "message_failed",
+      metadata: { error: error instanceof Error ? error.message : "Unknown error" },
+    });
+
+    // Re-throw so the caller (executeFlow → processComment) knows the DM failed
+    // and can mark dm_sent=false in the comment log. Without this, the pre-written
+    // dm_sent=true stays, permanently locking the user out (phantom lockout bug).
+    throw error;
   }
 
   if (data.messages.length > 1) {
@@ -472,7 +484,24 @@ async function executeSendMessage(
     }
   }
 
-  // Resolve late_conversation_id from conversation if not in context
+  // ── Comment-triggered flows must always use Private Reply API ──────────────
+  // Meta's sendInboxMessage (standard DM) requires the user to have messaged the
+  // page within the last 24h. But Meta's sendPrivateReplyToComment API allows
+  // replying to a comment via DM for up to 7 DAYS after the comment was posted.
+  // Comment-triggered flows ALWAYS have comment_id + post_id in context, so we
+  // always use the private reply endpoint here — regardless of whether a DM
+  // conversation already exists. This prevents the "24h window" failure that
+  // blocked returning users (who DM'd >24h ago) from receiving their worksheet.
+  if (
+    context.variables?.comment_id &&
+    context.variables?.post_id &&
+    lateAccountId
+  ) {
+    await sendFirstMessageAsPrivateReply(supabase, zernio, data, context, lateAccountId);
+    return;
+  }
+
+  // ── Regular DM flows (not comment-triggered) ───────────────────────────────
   let lateConversationId = context.lateConversationId;
   if (!lateConversationId) {
     const { data: conversation } = await supabase
@@ -482,14 +511,6 @@ async function executeSendMessage(
       .single();
 
     if (!conversation?.late_conversation_id) {
-      // Comment-triggered flows have no DM conversation yet. Instagram allows
-      // exactly one private reply per comment, so deliver the first message via
-      // the private-reply endpoint instead of silently dropping the whole node
-      // (users build comment flows with plain Send Message nodes, not Private Reply).
-      if (context.variables?.comment_id && context.variables?.post_id && lateAccountId) {
-        await sendFirstMessageAsPrivateReply(supabase, zernio, data, context, lateAccountId);
-        return;
-      }
       console.error("No late_conversation_id found for conversation:", context.conversationId);
       return;
     }
