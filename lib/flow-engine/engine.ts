@@ -1022,6 +1022,19 @@ async function executePrivateReply(
       sent_by_flow_id: context.flowId,
       status: "failed",
     });
+
+    await supabase.from("analytics_events").insert({
+      workspace_id: context.workspaceId,
+      flow_id: context.flowId,
+      contact_id: context.contactId,
+      event_type: "message_failed",
+      metadata: { error: error instanceof Error ? error.message : "Unknown error" },
+    });
+
+    // Re-throw so the caller knows the DM failed and can handle it
+    // (e.g. mark dm_sent=false, enable retry). Without this, the flow
+    // silently continues as if the message was delivered.
+    throw error;
   }
 }
 

@@ -252,24 +252,47 @@ async function processMessageEvent(
 
   const preview = messagePreview(msg.text);
 
-  const { data: conversation } = await supabase
+  // Two-step upsert to avoid overwriting late_conversation_id on existing
+  // conversations. The webhook receives Zernio's conversation ID (conv.id),
+  // but for comment-triggered flows we set late_conversation_id to the
+  // sender's PSID/IGA ID via sendFirstMessageAsPrivateReply. If we blindly
+  // overwrite it here on every incoming message, we'd break the inbox link.
+  // Step 1: try INSERT (only fires for new contacts).
+  const { data: newConversation } = await supabase
     .from("conversations")
-    .upsert(
-      {
-        workspace_id: channel.workspace_id,
-        channel_id: channel.id,
-        contact_id: contactId,
-        platform: channel.platform,
-        late_conversation_id: conv.id,
+    .insert({
+      workspace_id: channel.workspace_id,
+      channel_id: channel.id,
+      contact_id: contactId,
+      platform: channel.platform,
+      late_conversation_id: conv.id,
+      status: "open",
+      last_message_at: new Date().toISOString(),
+      last_message_preview: preview,
+      unread_count: 1,
+    })
+    .select("id, is_automation_paused")
+    .single();
+
+  let conversation = newConversation;
+
+  // Step 2: if INSERT failed (contact already exists), UPDATE without
+  // touching late_conversation_id.
+  if (!conversation) {
+    const { data: existingConversation } = await supabase
+      .from("conversations")
+      .update({
         status: "open",
         last_message_at: new Date().toISOString(),
         last_message_preview: preview,
-        unread_count: 1,
-      },
-      { onConflict: "channel_id,contact_id" }
-    )
-    .select("id, is_automation_paused")
-    .single();
+      })
+      .eq("channel_id", channel.id)
+      .eq("contact_id", contactId)
+      .select("id, is_automation_paused")
+      .single();
+
+    conversation = existingConversation;
+  }
 
   if (!conversation) {
     console.error("Failed to upsert conversation for webhook message");
