@@ -933,8 +933,14 @@ async function executeCommentReply(
     lateAccountId = channel.late_account_id;
   }
 
-  const commentId = context.variables?.comment_id || context.incomingMessage.sender?.id;
-  if (!commentId) return;
+  // Use comment_id from context variables. NEVER fall back to sender.id —
+  // that's the commenter's PSID/IGA user ID, not a comment ID, and passing it
+  // here would make the API reply to the wrong entity (or fail silently).
+  const commentId = context.variables?.comment_id;
+  if (!commentId) {
+    console.error("No comment_id in context variables for commentReply node");
+    return;
+  }
 
   const postId = context.variables?.post_id;
   if (!postId) {
@@ -986,8 +992,14 @@ async function executePrivateReply(
     lateAccountId = channel.late_account_id;
   }
 
-  const commentId = context.variables?.comment_id || context.incomingMessage.sender?.id;
-  if (!commentId) return;
+  // Use comment_id from context variables. NEVER fall back to sender.id —
+  // that's the commenter's PSID/IGA user ID, not a comment ID, and passing it
+  // here would make the API reply to the wrong entity (or fail silently).
+  const commentId = context.variables?.comment_id;
+  if (!commentId) {
+    console.error("No comment_id in context variables for privateReply node");
+    return;
+  }
 
   const postId = context.variables?.post_id;
   if (!postId) {
