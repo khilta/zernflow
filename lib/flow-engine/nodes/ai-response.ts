@@ -74,10 +74,12 @@ export async function executeAiResponse(
   }
 
   // Fetch last N messages from the conversation for context
+  // Include attachments so the AI knows when a message contained an
+  // image/sticker/etc it cannot see — prevents hallucinated guesses.
   const contextMessages = data.contextMessages || 10;
   const { data: recentMessages } = await supabase
     .from("messages")
-    .select("direction, text")
+    .select("direction, text, attachments")
     .eq("conversation_id", context.conversationId)
     .order("created_at", { ascending: false })
     .limit(contextMessages);
@@ -89,10 +91,26 @@ export async function executeAiResponse(
     // Reverse to get chronological order (oldest first)
     const chronological = [...recentMessages].reverse();
     for (const msg of chronological) {
-      if (!msg.text) continue;
+      if (!msg.text && !msg.attachments) continue;
+      let content = msg.text || "";
+      // Append attachment metadata so the AI knows there was an image/sticker
+      // it cannot process. This lets the system prompt's SKIP rule fire.
+      const rawAttachments = msg.attachments;
+      const attachmentList = Array.isArray(rawAttachments) ? rawAttachments : [];
+      if (attachmentList.length > 0) {
+        const types = attachmentList
+          .map((a: unknown) => {
+            if (typeof a === "object" && a !== null && "type" in a) {
+              return String((a as { type?: string }).type || "attachment");
+            }
+            return "attachment";
+          })
+          .join(", ");
+        content += content ? ` [Attachment: ${types}]` : `[Attachment: ${types}]`;
+      }
       aiMessages.push({
         role: msg.direction === "inbound" ? "user" : "assistant",
-        content: msg.text,
+        content,
       });
     }
   }
@@ -154,6 +172,25 @@ export async function executeAiResponse(
     // All retries exhausted — send fallback instead of ghosting the contact
     if (lastError) {
       throw lastError;
+    }
+
+    // ── SKIP detection ──────────────────────────────────────────────────────
+    // The AI may decide it cannot confidently help with this message.
+    // In that case it returns exactly "SKIP" (enforced by the system prompt).
+    // When it does, we DON'T send any message to the contact — silence is
+    // better than a confused or hallucinated reply.
+    if (text.trim().toUpperCase() === "SKIP") {
+      // Log the skip for monitoring so we can calibrate the threshold later
+      await supabase.from("analytics_events").insert({
+        workspace_id: context.workspaceId,
+        flow_id: context.flowId,
+        contact_id: context.contactId,
+        event_type: "ai_skipped",
+        metadata: { reason: "AI returned SKIP — not confident enough to reply" },
+      });
+
+      // Cancel the session — no message sent, downstream nodes don't run
+      return cancelRun(supabase, sessionId);
     }
 
     // Expose the generated text to downstream nodes as {{ai_response}}

@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/lib/types/database";
 import { executeFlow } from "@/lib/flow-engine/engine";
 import { createZernioClient } from "@/lib/zernio-client";
+import { generateText, createGateway } from "ai";
 
 type Channel = Database["public"]["Tables"]["channels"]["Row"];
 type Trigger = Database["public"]["Tables"]["triggers"]["Row"];
@@ -22,6 +23,150 @@ interface CommentKeywordConfig {
   }>;
   postIds?: string[];
   replyText?: string;
+}
+
+/**
+ * Pre-filter: determines whether an unmatched comment should be skipped
+ * WITHOUT calling the AI — saving tokens and preventing useless replies.
+ *
+ * Patterns from Zernio's official blog on Instagram comment moderation
+ * (https://zernio.com/blog/instagram-comment-moderation-api).
+ */
+function shouldSkipComment(text: string): boolean {
+  const lower = text.toLowerCase().trim();
+
+  // Too short to be a meaningful question
+  if (lower.length < 4) return true;
+
+  // Contains a URL — likely spam/promo, not a question about Khilta
+  if (/https?:\/\//i.test(text)) return true;
+
+  // Just tagging another user ("@username check this")
+  if (/^@\w+/.test(lower)) return true;
+
+  // Common spam phrases (Zernio detectSpam patterns)
+  if (/\b(dm me|check bio|click here|free money|winner|follow for follow|fff|l4l|c4c)\b/i.test(text)) return true;
+
+  // Pure gratitude/greetings with no question — no useful answer to give
+  if (/^(thanks|thank you|ty|tysm|nice|great|good|wow|awesome|amazing|beautiful|love this|congratulations|congrats|good job|well done|keep it up|god bless|blessed|happy|excited)\b/i.test(lower)) return true;
+
+  // Just a name (people tag friends in comments: "Anna Alejo", "Maria Santos")
+  if (/^[a-z]+ [a-z]+$/i.test(lower) && lower.split(/\s+/).length === 2) return true;
+
+  return false;
+}
+
+// ── AI comment reply system prompt ─────────────────────────────────────────
+// Separate from the DM system prompt — shorter, focused on public comment
+// replies. Must be SHORT (Instagram public comments), helpful, and willing
+// to SKIP when it can't confidently help.
+const COMMENT_AI_SYSTEM_PROMPT = `You are Pallavi, creator of Khilta — early learning worksheets for ages 2-8.
+
+Someone commented on our Instagram/Facebook post. Your job: decide if you can give a genuinely helpful reply, and if so, write a SHORT public comment reply.
+
+RESPONSE RULES (CRITICAL):
+- If you clearly understand the comment AND have a useful answer → reply in 1-2 short sentences
+- If you DON'T fully understand, the comment is unclear, or you have nothing useful to add → respond with EXACTLY: SKIP
+- Never guess. Never make up information. Never respond when confused.
+- When in doubt, SKIP.
+
+WHEN TO REPLY:
+- Questions about ages, worksheets, how to get them → give a short helpful answer + mention they can comment a keyword for free worksheets
+- Questions about what Khilta is → brief explanation
+
+WHEN TO SKIP:
+- Compliments, gratitude, greetings with no question
+- Comments in a language you don't fully understand
+- Comments that are just names, tags, or emoji
+- Anything you're not 100% sure about
+
+FORMAT:
+- Reply in the same language as the comment
+- Maximum 2 sentences, SHORT (Instagram public comment)
+- 1 emoji max
+- NO links (Instagram comments don't make links clickable)
+- If replying: suggest commenting "FREE" for a free sample worksheet
+
+WHAT KHILTA OFFERS:
+- FREE sample worksheets (comment FREE on posts)
+- 400+ worksheets, 10,000+ pages, ages 2-8
+- All digital PDF, instant download
+- Never mention prices
+
+Remember: SKIP is always better than a wrong or useless reply.`;
+
+/**
+ * Sends an unmatched comment to the AI for evaluation. Returns a public
+ * reply if the AI is confident, or null if the AI decided to SKIP.
+ *
+ * Uses the same AI Gateway (GPT-4o-mini) as the DM AI Smart Concierge.
+ */
+async function tryAiCommentReply(
+  supabase: SupabaseClient<Database>,
+  channel: Channel,
+  comment: IncomingComment,
+): Promise<string | null> {
+  try {
+    // Get workspace API keys
+    const { data: workspace } = await supabase
+      .from("workspaces")
+      .select("ai_api_key, late_api_key_encrypted")
+      .eq("id", channel.workspace_id)
+      .single();
+
+    if (!workspace?.late_api_key_encrypted) return null;
+
+    const aiGatewayKey = workspace.ai_api_key || process.env.AI_GATEWAY_API_KEY;
+    if (!aiGatewayKey) return null;
+
+    const model = "openai/gpt-4o-mini";
+
+    const gw = createGateway({ apiKey: aiGatewayKey });
+    const result = await generateText({
+      model: gw(model),
+      system: COMMENT_AI_SYSTEM_PROMPT,
+      messages: [
+        {
+          role: "user",
+          content: `Comment from @${comment.author.username || "user"}: "${comment.text}"`,
+        },
+      ],
+      temperature: 0.5, // Lower temp = more conservative, fewer guesses
+      maxOutputTokens: 150,
+    });
+
+    const reply = result.text.trim();
+
+    // AI decided to skip
+    if (reply.toUpperCase() === "SKIP" || reply.length < 2) {
+      // Log the skip for monitoring
+      await supabase.from("analytics_events").insert({
+        workspace_id: channel.workspace_id,
+        event_type: "comment_ai_skipped",
+        metadata: {
+          commentText: comment.text.slice(0, 200),
+          author: comment.author.username || comment.author.name,
+        },
+      });
+      return null;
+    }
+
+    // Log the successful AI reply for monitoring
+    await supabase.from("analytics_events").insert({
+      workspace_id: channel.workspace_id,
+      event_type: "comment_ai_replied",
+      metadata: {
+        commentText: comment.text.slice(0, 200),
+        aiReply: reply.slice(0, 200),
+        author: comment.author.username || comment.author.name,
+      },
+    });
+
+    return reply;
+  } catch (err) {
+    console.error("AI comment reply failed:", err);
+    return null; // On error, don't reply — fail gracefully
+  }
 }
 
 /**
@@ -123,23 +268,23 @@ export async function processComment({
     return { matched: false, skipped: "own_comment" };
   }
 
-  // ── One-reply-per-user-per-post rule ───────────────────────────────────────
-  // The bot should reply to each user ONCE on each post. If we've already
-  // replied to this author on this post, don't reply again. This is both
-  // a UX feature (no spam) and the ultimate loop prevention — even if all
-  // identity checks above somehow fail, the bot can only ever send 1 reply
-  // per user per post, making loops mathematically impossible.
+  // ── One-DM-per-user-per-post rule ──────────────────────────────────────────
+  // Industry standard (Meta, ManyChat, Spur): a user should receive at most ONE
+  // automated DM and ONE public reply per post, no matter how many comments they
+  // leave. Without this, commenting the same keyword twice (or commenting two
+  // different matching keywords) sends duplicate worksheet DMs — which looks
+  // spammy and can hurt account reputation.
   if (comment.author.id) {
-    const { count: existingReplies } = await supabase
+    const { count: existingInteractions } = await supabase
       .from("comment_logs")
       .select("*", { count: "exact", head: true })
       .eq("channel_id", channel.id)
       .eq("post_id", comment.postId)
       .eq("author_id", comment.author.id)
-      .eq("reply_sent", true);
-    if ((existingReplies ?? 0) >= 1) {
+      .or("dm_sent.eq.true,reply_sent.eq.true");
+    if ((existingInteractions ?? 0) >= 1) {
       console.log(
-        `[dedup] Already replied to author ${comment.author.id} on post ${comment.postId} — skipping`,
+        `[dedup] Already sent DM/reply to author ${comment.author.id} on post ${comment.postId} — skipping`,
       );
       return { matched: false, skipped: "rate_limited" };
     }
@@ -152,6 +297,38 @@ export async function processComment({
   const matchedTrigger = matchCommentTrigger(triggers, comment);
 
   if (!matchedTrigger) {
+    // ── AI comment reply for unmatched comments ────────────────────────────
+    // Pre-filter: skip spam, greetings, tags, links without wasting AI tokens
+    if (!shouldSkipComment(comment.text)) {
+      // Send to AI — it will decide whether to reply or SKIP
+      const aiReply = await tryAiCommentReply(supabase, channel, comment);
+
+      if (aiReply) {
+        // AI had a confident answer — post it as a public reply
+        const { data: workspace } = await supabase
+          .from("workspaces")
+          .select("late_api_key_encrypted")
+          .eq("id", channel.workspace_id)
+          .single();
+
+        if (workspace?.late_api_key_encrypted) {
+          try {
+            const zernio = createZernioClient(workspace.late_api_key_encrypted);
+            await zernio.comments.replyToInboxPost({
+              path: { postId: comment.postId },
+              body: {
+                accountId: channel.late_account_id,
+                message: aiReply,
+                commentId: comment.id,
+              },
+            });
+          } catch (err) {
+            console.error("Failed to post AI comment reply:", err);
+          }
+        }
+      }
+    }
+
     await logComment({ supabase, channel, comment, triggerId: null });
     return { matched: false };
   }
@@ -266,6 +443,18 @@ export async function processComment({
         status: "sent",
       });
 
+      // Claim the comment log BEFORE the flow runs. This closes a race condition
+      // where two comments from the same user arrive in quick succession (seconds
+      // apart), both pass the dedup check above (because neither log is written
+      // yet), and both trigger a DM. By writing the log with dm_sent=true now,
+      // the second comment's dedup check will find it and skip.
+      await logComment({
+        supabase, channel, comment,
+        triggerId: matchedTrigger.id,
+        dmSent: true,
+        replySent,
+      });
+
       try {
         await executeFlow(supabase, {
           triggerId: matchedTrigger.id,
@@ -293,6 +482,13 @@ export async function processComment({
         dmSent = true;
       } catch (err) {
         console.error("Failed to execute comment flow:", err);
+        // Flow failed — update the log to reflect dm_sent=false
+        await logComment({
+          supabase, channel, comment,
+          triggerId: matchedTrigger.id,
+          dmSent: false,
+          replySent,
+        });
       }
     }
 
