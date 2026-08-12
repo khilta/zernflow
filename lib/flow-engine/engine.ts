@@ -407,6 +407,21 @@ async function sendFirstMessageAsPrivateReply(
       body: { accountId: lateAccountId, message: text },
     });
 
+    // Link the conversation to its Zernio conversation ID so the inbox
+    // can fetch the message thread. For Facebook, Zernio's conversation
+    // ID equals the commenter's PSID (sender.id). For Instagram, it's
+    // set later when the contact sends a DM. Without this, the inbox
+    // shows "Select a conversation" forever because the messages API
+    // returns 404 when late_conversation_id is null.
+    const senderId = context.incomingMessage?.sender?.id;
+    if (senderId && !context.lateConversationId) {
+      await supabase
+        .from("conversations")
+        .update({ late_conversation_id: senderId })
+        .eq("id", context.conversationId);
+      context.lateConversationId = senderId;
+    }
+
     await supabase.from("messages").insert({
       conversation_id: context.conversationId,
       direction: "outbound",
