@@ -42,8 +42,24 @@ export async function executeFlow(
   // their messages without each node having to look up the contact. Idempotent:
   // only set if not already present, so comment-triggered flows that seed
   // {{commenter_name}} keep their own value and DM flows get the sender name.
-  if (context.incomingMessage.sender?.name) {
-    context.variables.contact_name ??= context.incomingMessage.sender.name;
+  // FALLBACK CHAIN: name → username → contact display_name from DB
+  // (Facebook/IG DMs may have null name — same bug pattern as comment-processor)
+  const senderName =
+    context.incomingMessage.sender?.name ||
+    context.incomingMessage.sender?.username;
+  if (senderName) {
+    context.variables.contact_name ??= senderName;
+  }
+  // If still not set, try contact display_name from DB
+  if (!context.variables.contact_name && context.contactId) {
+    const { data: contact } = await supabase
+      .from("contacts")
+      .select("display_name")
+      .eq("id", context.contactId)
+      .maybeSingle();
+    if (contact?.display_name) {
+      context.variables.contact_name = contact.display_name;
+    }
   }
 
   // Check for active session waiting for input
@@ -600,6 +616,14 @@ async function executeSendMessage(
         status: "sent",
       });
 
+      // Update conversation preview so inbox sidebar shows latest message
+      await supabase.from("conversations")
+        .update({
+          last_message_preview: text.slice(0, 100),
+          last_message_at: new Date().toISOString(),
+        })
+        .eq("id", context.conversationId);
+
       await supabase.from("analytics_events").insert({
         workspace_id: context.workspaceId,
         flow_id: context.flowId,
@@ -623,6 +647,11 @@ async function executeSendMessage(
         event_type: "message_failed",
         metadata: { error: error instanceof Error ? error.message : "Unknown error" },
       });
+
+      // Re-throw so callers know the send failed (matches sendFirstMessageAsPrivateReply
+      // and executePrivateReply behavior). Without this, the flow continues as if the
+      // DM was sent successfully, potentially sending follow-up messages into the void.
+      throw error;
     }
 
     // Small delay between messages
@@ -829,6 +858,7 @@ async function executeHttpRequest(
         ...data.headers,
       },
       body: data.method !== "GET" ? body : undefined,
+      signal: AbortSignal.timeout(10000), // Prevent indefinite hang on slow endpoints
     });
 
     const responseData = await response.text();
@@ -843,6 +873,12 @@ async function executeHttpRequest(
     }
   } catch (error) {
     console.error("HTTP request failed:", error);
+    // Store error in response variable so downstream nodes don't get literal tokens
+    if (data.responseVariable && context.variables) {
+      context.variables[data.responseVariable] = JSON.stringify({
+        error: error instanceof Error ? error.message : "Request failed",
+      }) as string;
+    }
   }
 }
 
@@ -897,6 +933,11 @@ async function executeSubscription(
 }
 
 function executeABSplit(data: ABSplitNodeData): string {
+  // Guard against empty/missing paths array — prevents TypeError crash
+  if (!data.paths?.length) {
+    console.error("A/B split node has no paths configured");
+    return "handle:default";
+  }
   const totalWeight = data.paths.reduce((sum, p) => sum + p.weight, 0);
   const random = Math.random() * totalWeight;
 
@@ -967,6 +1008,17 @@ async function executeCommentReply(
     });
   } catch (error) {
     console.error("Failed to post comment reply:", error);
+    await supabase.from("analytics_events").insert({
+      workspace_id: context.workspaceId,
+      flow_id: context.flowId,
+      contact_id: context.contactId,
+      event_type: "message_failed",
+      metadata: {
+        error: error instanceof Error ? error.message : "Unknown error",
+        node: "commentReply",
+      },
+    });
+    throw error;
   }
 }
 

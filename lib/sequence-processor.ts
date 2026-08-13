@@ -155,6 +155,21 @@ async function sendSequenceMessage(
 
   const zernio = createZernioClient(workspace.late_api_key_encrypted);
 
+  // Interpolate template variables ({{contact_name}} etc.)
+  // Load contact display_name for variable substitution
+  let variables: Record<string, string> = {};
+  const { data: contact } = await supabase
+    .from("contacts")
+    .select("display_name")
+    .eq("id", contactId)
+    .maybeSingle();
+  if (contact?.display_name) {
+    variables.contact_name = contact.display_name;
+  }
+  const interpolatedText = text.replace(/\{\{(\w+(?:\.\w+)*)\}\}/g, (token, key: string) =>
+    variables[key] ?? token
+  );
+
   // Get channel's late_account_id
   const { data: channel } = await supabase
     .from("channels")
@@ -188,17 +203,25 @@ async function sendSequenceMessage(
   try {
     const response = await zernio.messages.sendInboxMessage({
       path: { conversationId: conversation.late_conversation_id },
-      body: { accountId: channel.late_account_id, message: text },
+      body: { accountId: channel.late_account_id, message: interpolatedText },
     });
 
     // Store outbound message
     await supabase.from("messages").insert({
       conversation_id: conversation.id,
       direction: "outbound",
-      text,
+      text: interpolatedText,
       status: "sent",
       platform_message_id: response.data?.data?.messageId || null,
     });
+
+    // Update conversation preview
+    await supabase.from("conversations")
+      .update({
+        last_message_preview: interpolatedText.slice(0, 100),
+        last_message_at: new Date().toISOString(),
+      })
+      .eq("id", conversation.id);
   } catch (err) {
     console.error("Failed to send sequence message:", err);
 
@@ -206,7 +229,7 @@ async function sendSequenceMessage(
     await supabase.from("messages").insert({
       conversation_id: conversation.id,
       direction: "outbound",
-      text,
+      text: interpolatedText,
       status: "failed",
     });
   }
