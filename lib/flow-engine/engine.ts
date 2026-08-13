@@ -73,6 +73,16 @@ export async function executeFlow(
   const nodes = flow.nodes as unknown as FlowNode[];
   const edges = flow.edges as unknown as FlowEdge[];
 
+  // Guard against malformed flow data — nodes/edges must be arrays.
+  // Supabase can return null/string if the JSONB column is corrupted.
+  // Without this guard, nodes.find() throws "i.find is not a function" (minified).
+  if (!Array.isArray(nodes) || !Array.isArray(edges)) {
+    console.error(
+      `Flow ${context.flowId} has malformed nodes/edges (nodes: ${typeof nodes}, edges: ${typeof edges})`
+    );
+    return;
+  }
+
   // Get channel platform and late_account_id
   const { data: channel } = await supabase
     .from("channels")
