@@ -115,6 +115,71 @@ export async function executeAiResponse(
     }
   }
 
+  // ── RAG Knowledge Base Search ──────────────────────────────────────────
+  // Search the knowledge_base table for relevant context based on the
+  // latest user message. Inject the results into the system prompt so the
+  // AI has accurate, specific information to answer with.
+  let ragContext = "";
+  const aiGatewayKeyEarly = workspace.ai_api_key || process.env.AI_GATEWAY_API_KEY;
+
+  if (aiGatewayKeyEarly) {
+    try {
+      // Get the latest inbound message (the user's current question)
+      const latestUserMsg = aiMessages
+        .filter((m) => m.role === "user")
+        .pop();
+
+      if (latestUserMsg && latestUserMsg.content.trim().length > 2) {
+        // Generate embedding for the user's message via Vercel AI Gateway
+        const embedResponse = await fetch(
+          "https://ai-gateway.vercel.sh/v1/embeddings",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${aiGatewayKeyEarly}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model: "openai/text-embedding-3-small",
+              input: latestUserMsg.content.slice(0, 1000),
+            }),
+          }
+        );
+
+        if (embedResponse.ok) {
+          const embedData = await embedResponse.json();
+          const queryEmbedding: number[] = embedData.data[0].embedding;
+          const embeddingStr = `[${queryEmbedding.join(",")}]`;
+          const escapedQuery = latestUserMsg.content.replace(/'/g, "''").slice(0, 500);
+
+          // Call hybrid search RPC (keyword + semantic with RRF fusion)
+          const { data: searchResults, error: searchError } = await supabase.rpc(
+            "hybrid_search_kb" as never,
+            {
+              query_text: escapedQuery,
+              query_embedding: embeddingStr,
+              match_count: 3,
+              full_text_weight: 1.0,
+              semantic_weight: 1.5, // Slightly favor semantic for conversational queries
+              rrf_k: 50,
+            } as never
+          ) as { data: Array<{ question: string; answer: string; score: number }> | null; error: unknown };
+
+          if (!searchError && searchResults && searchResults.length > 0) {
+            // Build context string from search results
+            const contextParts = searchResults.map(
+              (r: { question: string; answer: string }) => `Q: ${r.question}\nA: ${r.answer}`
+            );
+            ragContext = `\n\n---\n## KNOWLEDGE BASE RESULTS (use these to answer the user's question accurately)\n${contextParts.join("\n\n")}\n---\n`;
+          }
+        }
+      }
+    } catch (ragError) {
+      // RAG failure should NOT block the response — just log and continue
+      console.warn("RAG search failed (non-blocking), continuing with base prompt:", ragError);
+    }
+  }
+
   try {
     const model = data.model || "openai/gpt-4o-mini";
     const aiGatewayKey = workspace.ai_api_key || process.env.AI_GATEWAY_API_KEY;
@@ -145,7 +210,7 @@ export async function executeAiResponse(
         const gw = createGateway({ apiKey: aiGatewayKey || undefined });
         const result = await generateText({
           model: gw(model),
-          system: data.systemPrompt || "You are a helpful customer support agent.",
+          system: (data.systemPrompt || "You are a helpful customer support agent.") + ragContext,
           messages: aiMessages,
           temperature: data.temperature ?? 0.7,
           maxOutputTokens: data.maxTokens ?? 500,
