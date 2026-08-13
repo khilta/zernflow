@@ -485,7 +485,7 @@ export async function processComment({
             text: comment.text,
             sender: {
               id: senderId,
-              name: comment.author.name,
+              name: senderName, // Use senderName (falls back to username) — comment.author.name is often empty for IG comments
               username: comment.author.username,
             },
           },
