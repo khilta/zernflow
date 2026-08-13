@@ -318,7 +318,22 @@ async function traverseNodes(
   });
 
   // Execute the node
-  const result = await executeNode(supabase, node, context, sessionId);
+  let result: string | void;
+  try {
+    result = await executeNode(supabase, node, context, sessionId);
+  } catch (error) {
+    // Node execution failed (e.g. DM send failure). Mark the session as
+    // cancelled so it doesn't strand as "active" forever — which would cause
+    // the next message from this contact to resume a dead session.
+    // Note: DB CHECK constraint allows 'active', 'completed', 'expired', 'cancelled'.
+    // 'cancelled' is the closest to 'failed' (can't add 'failed' without migration).
+    console.error(`Node ${node.id} (${node.type}) failed in flow ${context.flowId}:`, error);
+    await supabase
+      .from("flow_sessions")
+      .update({ status: "cancelled" })
+      .eq("id", sessionId);
+    throw error;
+  }
 
   // Persist variables written by output-producing nodes so they survive
   // pauses (resumeSession reloads them from the session row).

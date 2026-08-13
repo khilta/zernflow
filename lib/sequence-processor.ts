@@ -156,7 +156,9 @@ async function sendSequenceMessage(
   const zernio = createZernioClient(workspace.late_api_key_encrypted);
 
   // Interpolate template variables ({{contact_name}} etc.)
-  // Load contact display_name for variable substitution
+  // Uses simple flat-key lookup (sequences only have contact_name, no nested objects).
+  // The engine's interpolateVariables supports dot paths for complex flow variables;
+  // sequences don't need that complexity.
   let variables: Record<string, string> = {};
   const { data: contact } = await supabase
     .from("contacts")
@@ -166,7 +168,7 @@ async function sendSequenceMessage(
   if (contact?.display_name) {
     variables.contact_name = contact.display_name;
   }
-  const interpolatedText = text.replace(/\{\{(\w+(?:\.\w+)*)\}\}/g, (token, key: string) =>
+  const interpolatedText = text.replace(/\{\{(\w+)\}\}/g, (token, key: string) =>
     variables[key] ?? token
   );
 

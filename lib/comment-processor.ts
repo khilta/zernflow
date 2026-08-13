@@ -497,10 +497,10 @@ export async function processComment({
           },
         });
 
-        // Verify the DM was actually sent by checking the messages table.
-        // executeSendMessage may swallow errors internally (its own try/catch
-        // logs the failure but doesn't throw), so we can't rely on executeFlow
-        // throwing. Query the actual message status.
+        // Verify the DM was actually sent. executeSendMessage now re-throws on
+        // failure, so reaching here means the first message was sent. But we
+        // still verify via the messages table to handle edge cases (partial
+        // multi-message sends where the first succeeds but a later one fails).
         const { data: recentMessages } = await supabase
           .from("messages")
           .select("status")
