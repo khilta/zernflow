@@ -22,7 +22,51 @@ interface CommentKeywordConfig {
     matchType?: "exact" | "contains" | "startsWith";
   }>;
   postIds?: string[];
-  replyText?: string;
+  /** Public comment reply. Can be a single string or an array of variants —
+   * when it's an array, one variant is picked at random per comment so the
+   * comment section doesn't look like a bot army with identical replies.
+   *
+   * IMPORTANT: No reply variant should contain any trigger keyword — otherwise
+   * our own reply can trigger the automation again, creating an infinite loop.
+   */
+  replyText?: string | string[];
+}
+
+/**
+ * Picks one reply from a replyText config value. Supports both legacy single
+ * strings and new variant arrays. Returns null if replyText is missing/empty.
+ */
+function pickReplyText(replyText?: string | string[]): string | null {
+  if (!replyText) return null;
+  if (typeof replyText === "string") {
+    return replyText.trim() || null;
+  }
+  if (Array.isArray(replyText) && replyText.length > 0) {
+    // Pick a random variant
+    const variants = replyText.map((r) => r.trim()).filter(Boolean);
+    if (variants.length === 0) return null;
+    return variants[Math.floor(Math.random() * variants.length)];
+  }
+  return null;
+}
+
+/**
+ * Returns all known reply texts across all triggers (flattened from arrays).
+ * Used to detect if an incoming comment is actually OUR OWN bot reply —
+ * a defense-in-depth guard against infinite self-reply loops.
+ *
+ * The check is case-insensitive and matches on the first 40 chars of the
+ * comment text to handle truncation by the platform.
+ */
+function isLikelyOurOwnReply(
+  commentText: string,
+  allReplyTexts: string[],
+): boolean {
+  const lower = commentText.toLowerCase().trim().slice(0, 60);
+  if (!lower) return false;
+  return allReplyTexts.some(
+    (r) => r.toLowerCase().trim().slice(0, 60) === lower,
+  );
 }
 
 /**
@@ -311,6 +355,25 @@ export async function processComment({
   });
   const matchedTrigger = matchCommentTrigger(triggers, comment);
 
+  // ── Self-reply loop guard: check if this comment matches any of our own
+  // configured replyTexts. If the bot's own reply happens to contain a trigger
+  // keyword (e.g. replying "Fun rainbow challenge" which still matches COLOR
+  // via partial match), the webhook may fire again for our own reply.
+  // The existing author checks (username/display_name/platform_page_id) are the
+  // primary defense, but Meta sometimes sends different author field shapes,
+  // so this content-based check is a safety net.
+  const allReplyTexts = triggers.flatMap((t) => {
+    const cfg = t.config as unknown as CommentKeywordConfig;
+    if (!cfg.replyText) return [];
+    return Array.isArray(cfg.replyText) ? cfg.replyText : [cfg.replyText];
+  });
+  if (isLikelyOurOwnReply(comment.text, allReplyTexts)) {
+    console.log(
+      `[loop-guard] Comment "${comment.text.slice(0, 40)}..." matches our own reply text — skipping`,
+    );
+    return { matched: false, skipped: "own_comment" };
+  }
+
   if (!matchedTrigger) {
     // ── AI comment reply for unmatched comments ────────────────────────────
     // Pre-filter: skip spam, greetings, tags, links without wasting AI tokens
@@ -401,7 +464,8 @@ export async function processComment({
     }
 
     let replySent = false;
-    if (config.replyText) {
+    const replyMessage = pickReplyText(config.replyText);
+    if (replyMessage) {
       const { data: workspace } = await supabase
         .from("workspaces")
         .select("late_api_key_encrypted")
@@ -415,7 +479,7 @@ export async function processComment({
             path: { postId: comment.postId },
             body: {
               accountId: channel.late_account_id,
-              message: config.replyText,
+              message: replyMessage,
               commentId: comment.id,
             },
           });
